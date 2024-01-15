@@ -97,6 +97,23 @@ fn insert_slice(
     state.operators_sinks.push(PipelineNode::Sink(node));
 }
 
+fn all_inputs_are_sources(inputs: &Vec<Node>, lp_arena: &Arena<ALogicalPlan>) -> bool {
+    use ALogicalPlan::*;
+    inputs.iter().all(|node| match lp_arena.get(*node) {
+        Scan { .. } => true,
+        DataFrameScan { .. } => true,
+        MapFunction {
+            input,
+            function: FunctionNode::Rechunk,
+        } => match lp_arena.get(*input) {
+            Scan { .. } => true,
+            DataFrameScan { .. } => true,
+            _ => false,
+        },
+        _ => false,
+    })
+}
+
 pub(crate) fn insert_streaming_nodes(
     root: Node,
     lp_arena: &mut Arena<ALogicalPlan>,
@@ -300,15 +317,7 @@ pub(crate) fn insert_streaming_nodes(
             // add globbing patterns
             #[cfg(any(feature = "csv", feature = "parquet"))]
             Union { inputs, options }
-                if options.slice.is_none()
-                    && inputs.iter().all(|node| match lp_arena.get(*node) {
-                        Scan { .. } => true,
-                        MapFunction {
-                            input,
-                            function: FunctionNode::Rechunk,
-                        } => matches!(lp_arena.get(*input), Scan { .. }),
-                        _ => false,
-                    }) =>
+                if options.slice.is_none() && all_inputs_are_sources(inputs, lp_arena) =>
             {
                 state.sources.push(root);
                 pipeline_trees[current_idx].push(state);
@@ -458,6 +467,10 @@ pub(crate) fn insert_streaming_nodes(
                 } else {
                     return Ok(false);
                 }
+            },
+            HConcat { inputs, .. } if all_inputs_are_sources(inputs, lp_arena) => {
+                state.sources.push(root);
+                pipeline_trees[current_idx].push(state);
             },
             lp => {
                 if allow_partial {

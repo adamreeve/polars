@@ -347,25 +347,21 @@ def test_custom_temp_dir(monkeypatch: Any) -> None:
     assert os.listdir(temp_dir), f"Temp directory '{temp_dir}' is empty"
 
 
-@pytest.mark.write_disk()
-def test_streaming_with_hconcat(tmp_path: Path) -> None:
-    df1 = pl.DataFrame(
+def test_streaming_hconcat_with_source_inputs() -> None:
+    # When the inputs are all sources, the hconcat can be streamed
+    lf1 = pl.LazyFrame(
         {
             "id": [0, 0, 1, 1, 2, 2],
             "x": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
         }
     )
-    df1.write_parquet(tmp_path / "df1.parquet")
 
-    df2 = pl.DataFrame(
+    lf2 = pl.LazyFrame(
         {
             "y": [6.0, 7.0, 8.0, 9.0, 10.0, 11.0],
         }
     )
-    df2.write_parquet(tmp_path / "df2.parquet")
 
-    lf1 = pl.scan_parquet(tmp_path / "df1.parquet")
-    lf2 = pl.scan_parquet(tmp_path / "df2.parquet")
     query = (
         pl.concat([lf1, lf2], how="horizontal")
         .group_by("id")
@@ -375,9 +371,50 @@ def test_streaming_with_hconcat(tmp_path: Path) -> None:
 
     plan_lines = [line.strip() for line in query.explain(streaming=True).splitlines()]
 
+    # Check that the full query is streamed
+    assert "STREAMING" in plan_lines[0]
+
+    result = query.collect(streaming=True)
+
+    expected = pl.DataFrame(
+        {
+            "id": [0, 1, 2],
+            "x": [0.5, 2.5, 4.5],
+            "y": [6.5, 8.5, 10.5],
+        }
+    )
+
+    assert_frame_equal(result, expected)
+
+
+def test_streaming_hconcat_with_non_source_inputs() -> None:
+    # When the inputs are not all sources, the hconcat cannot be streamed
+    lf1 = pl.LazyFrame(
+        {
+            "id": [0, 0, 1, 1, 2, 2],
+            "x": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+        }
+    )
+
+    lf2 = pl.LazyFrame(
+        {
+            "id": [0, 0, 1, 1, 2, 2],
+            "y": [6.0, 7.0, 8.0, 9.0, 10.0, 11.0],
+        }
+    )
+
+    query = (
+        pl.concat([
+            lf1.group_by("id").agg(pl.all().mean()).sort(pl.col("id")),
+            lf2.group_by("id").agg(pl.all().mean()).sort(pl.col("id")).select("y"),
+        ], how="horizontal")
+    )
+
+    plan_lines = [line.strip() for line in query.explain(streaming=True).splitlines()]
+
     # Each input of the concatenation should be a streaming section,
     # as these might be streamable even though the horizontal concatenation itself
-    # doesn't yet support streaming.
+    # cannot be streamed.
     for i, line in enumerate(plan_lines):
         if line.startswith("PLAN"):
             assert plan_lines[i + 1].startswith(

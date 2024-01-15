@@ -154,6 +154,35 @@ where
     }
 }
 
+fn get_union_sources<F>(
+    inputs: &Vec<Node>,
+    lp_arena: &Arena<ALogicalPlan>,
+    operator_objects: &mut Vec<Box<dyn Operator>>,
+    expr_arena: &Arena<AExpr>,
+    to_physical: &F,
+    push_first_input_predicate: bool,
+    verbose: bool,
+) -> PolarsResult<Vec<Box<dyn Source>>>
+where
+    F: Fn(Node, &Arena<AExpr>, Option<&SchemaRef>) -> PolarsResult<Arc<dyn PhysicalPipedExpr>>,
+{
+    inputs
+        .iter()
+        .enumerate()
+        .map(|(i, node)| {
+            let lp = lp_arena.get(*node);
+            get_source(
+                lp.clone(),
+                operator_objects,
+                expr_arena,
+                &to_physical,
+                push_first_input_predicate && i == 0,
+                verbose && i == 0,
+            )
+        })
+        .collect::<PolarsResult<Vec<_>>>()
+}
+
 pub fn get_sink<F>(
     node: Node,
     lp_arena: &Arena<ALogicalPlan>,
@@ -639,23 +668,32 @@ where
                 verbose,
             )?,
             Union { inputs, .. } => {
-                let sources = inputs
-                    .iter()
-                    .enumerate()
-                    .map(|(i, node)| {
-                        let lp = lp_arena.get(*node);
-                        // only push predicate of first source
-                        get_source(
-                            lp.clone(),
-                            &mut operator_objects,
-                            expr_arena,
-                            &to_physical,
-                            i == 0,
-                            verbose && i == 0,
-                        )
-                    })
-                    .collect::<PolarsResult<Vec<_>>>()?;
+                let sources = get_union_sources(
+                    inputs,
+                    lp_arena,
+                    &mut operator_objects,
+                    expr_arena,
+                    &to_physical,
+                    true,
+                    verbose,
+                )?;
                 Box::new(sources::UnionSource::new(sources)) as Box<dyn Source>
+            },
+            HConcat { inputs, .. } => {
+                let sources = get_union_sources(
+                    inputs,
+                    lp_arena,
+                    &mut operator_objects,
+                    expr_arena,
+                    &to_physical,
+                    false,
+                    verbose,
+                )?;
+                let source_schemas = inputs
+                    .iter()
+                    .map(|input| lp_arena.get(*input).schema(lp_arena).into_owned())
+                    .collect::<Vec<_>>();
+                Box::new(sources::HConcatSource::new(sources, source_schemas)) as Box<dyn Source>
             },
             lp => {
                 panic!("source {lp:?} not (yet) supported")
