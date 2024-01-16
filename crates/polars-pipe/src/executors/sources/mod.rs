@@ -5,6 +5,7 @@ mod hconcat;
 mod ipc_one_shot;
 #[cfg(feature = "parquet")]
 mod parquet;
+mod projection;
 mod reproject;
 mod union;
 
@@ -15,6 +16,7 @@ pub(crate) use hconcat::*;
 pub(crate) use ipc_one_shot::*;
 #[cfg(feature = "parquet")]
 pub(crate) use parquet::*;
+pub(crate) use projection::*;
 pub(crate) use reproject::*;
 pub(crate) use union::*;
 

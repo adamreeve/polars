@@ -38,6 +38,7 @@ where
 fn get_source<F>(
     source: ALogicalPlan,
     operator_objects: &mut Vec<Box<dyn Operator>>,
+    lp_arena: &Arena<ALogicalPlan>,
     expr_arena: &Arena<AExpr>,
     to_physical: &F,
     push_predicate: bool,
@@ -150,6 +151,32 @@ where
                 _ => todo!(),
             }
         },
+        MapFunction {
+            input,
+            function:
+                FunctionNode::FastProjection {
+                    columns,
+                    duplicate_check,
+                },
+        } => {
+            let input_plan = lp_arena.get(input);
+            let input_schema = input_plan.schema(lp_arena).into_owned();
+            let input_source = get_source(
+                input_plan.clone(),
+                operator_objects,
+                lp_arena,
+                expr_arena,
+                to_physical,
+                push_predicate,
+                verbose,
+            )?;
+            // TODO: duplicate_check?
+            Ok(Box::new(sources::FastProjectionSource::new(
+                input_source,
+                columns,
+                input_schema,
+            )) as Box<dyn Source>)
+        },
         _ => unreachable!(),
     }
 }
@@ -174,6 +201,7 @@ where
             get_source(
                 lp.clone(),
                 operator_objects,
+                lp_arena,
                 expr_arena,
                 &to_physical,
                 push_first_input_predicate && i == 0,
@@ -654,6 +682,7 @@ where
             lp @ DataFrameScan { .. } => get_source(
                 lp.clone(),
                 &mut operator_objects,
+                lp_arena,
                 expr_arena,
                 &to_physical,
                 true,
@@ -662,6 +691,7 @@ where
             lp @ Scan { .. } => get_source(
                 lp.clone(),
                 &mut operator_objects,
+                lp_arena,
                 expr_arena,
                 &to_physical,
                 true,

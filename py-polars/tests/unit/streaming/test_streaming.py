@@ -432,3 +432,43 @@ def test_streaming_hconcat_with_non_source_inputs() -> None:
     )
 
     assert_frame_equal(result, expected)
+
+
+def test_streaming_hconcat_with_project() -> None:
+    # Projections on a source should be able to be used
+    # as inputs into a streaming hconcat
+    lf1 = pl.LazyFrame(
+        {
+            "id": [0, 0, 1, 1, 2, 2],
+            "x": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+            "z": [12.0, 13.0, 14.0, 15.0, 16.0, 17.0],
+        }
+    )
+
+    lf2 = pl.LazyFrame(
+        {
+            "id": [0, 0, 1, 1, 2, 2],
+            "y": [6.0, 7.0, 8.0, 9.0, 10.0, 11.0],
+        }
+    )
+
+    query = pl.concat([
+        lf1.drop("z"),
+        lf2.drop("id"),
+    ], how="horizontal")
+
+    plan_lines = [line.strip() for line in query.explain(streaming=True).splitlines()]
+
+    assert "STREAMING" in plan_lines[0]
+
+    result = query.collect(streaming=True)
+
+    expected = pl.DataFrame(
+        {
+            "id": [0, 0, 1, 1, 2, 2],
+            "x": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+            "y": [6.0, 7.0, 8.0, 9.0, 10.0, 11.0],
+        }
+    )
+
+    assert_frame_equal(result, expected)

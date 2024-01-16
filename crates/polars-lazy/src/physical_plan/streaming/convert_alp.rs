@@ -110,6 +110,15 @@ fn all_inputs_are_sources(inputs: &Vec<Node>, lp_arena: &Arena<ALogicalPlan>) ->
             DataFrameScan { .. } => true,
             _ => false,
         },
+        // FastProjection can be merged with the source
+        MapFunction {
+            input,
+            function: FunctionNode::FastProjection { .. },
+        } => match lp_arena.get(*input) {
+            Scan { .. } => true,
+            DataFrameScan { .. } => true,
+            _ => false,
+        },
         _ => false,
     })
 }
