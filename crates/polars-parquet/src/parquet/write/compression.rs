@@ -16,7 +16,7 @@ fn compress_data(
         mut buffer,
         header,
         descriptor,
-        selected_rows,
+        rows,
     } = page;
     let uncompressed_page_size = buffer.len();
     if compression != CompressionOptions::Uncompressed {
@@ -45,7 +45,7 @@ fn compress_data(
         compression.into(),
         uncompressed_page_size,
         descriptor,
-        selected_rows,
+        rows,
     ))
 }
 

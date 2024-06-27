@@ -89,16 +89,6 @@ impl<'a> utils::Decoder<'a> for BinViewDecoder {
                     page_values,
                 );
             },
-            BinaryState::FilteredRequired(page) => {
-                for x in page.values.by_ref().take(additional) {
-                    values.push_value_ignore_validity(x)
-                }
-            },
-            BinaryState::FilteredDelta(page) => {
-                for x in page.values.by_ref().take(additional) {
-                    values.push_value_ignore_validity(x)
-                }
-            },
             BinaryState::OptionalDictionary(page_validity, page_values) => {
                 // Already done on the dict.
                 validate_utf8 = false;
@@ -129,58 +119,6 @@ impl<'a> utils::Decoder<'a> for BinViewDecoder {
                     values.push_value_ignore_validity(x)
                 }
                 page.values.get_result()?;
-            },
-            BinaryState::FilteredOptional(page_validity, page_values) => {
-                extend_from_decoder(
-                    validity,
-                    page_validity,
-                    Some(additional),
-                    values,
-                    page_values.by_ref(),
-                );
-            },
-            BinaryState::FilteredOptionalDelta(page_validity, page_values) => {
-                extend_from_decoder(
-                    validity,
-                    page_validity,
-                    Some(additional),
-                    values,
-                    page_values.by_ref(),
-                );
-            },
-            BinaryState::FilteredRequiredDictionary(page) => {
-                // TODO! directly set the dict as buffers and only insert the proper views.
-                // This will save a lot of memory.
-                // Already done on the dict.
-                validate_utf8 = false;
-                let page_dict = &page.dict;
-                for x in page
-                    .values
-                    .by_ref()
-                    .map(|index| page_dict.value(index as usize))
-                    .take(additional)
-                {
-                    values.push_value_ignore_validity(x)
-                }
-                page.values.iter.get_result()?;
-            },
-            BinaryState::FilteredOptionalDictionary(page_validity, page_values) => {
-                // Already done on the dict.
-                validate_utf8 = false;
-                // TODO! directly set the dict as buffers and only insert the proper views.
-                // This will save a lot of memory.
-                let page_dict = &page_values.dict;
-                extend_from_decoder(
-                    validity,
-                    page_validity,
-                    Some(additional),
-                    values,
-                    &mut page_values
-                        .values
-                        .by_ref()
-                        .map(|index| page_dict.value(index as usize)),
-                );
-                page_values.values.get_result()?;
             },
             BinaryState::OptionalDeltaByteArray(page_validity, page_values) => extend_from_decoder(
                 validity,

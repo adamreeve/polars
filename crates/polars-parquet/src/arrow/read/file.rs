@@ -7,7 +7,6 @@ use polars_error::PolarsResult;
 
 use super::{RowGroupDeserializer, RowGroupMetaData};
 use crate::arrow::read::read_columns_many;
-use crate::parquet::indexes::FilteredPage;
 
 /// An iterator of [`RecordBatchT`]s coming from row groups of a parquet file.
 ///
@@ -30,10 +29,8 @@ impl<R: Read + Seek> FileReader<R> {
         schema: ArrowSchema,
         chunk_size: Option<usize>,
         limit: Option<usize>,
-        page_indexes: Option<Vec<Vec<Vec<Vec<FilteredPage>>>>>,
     ) -> Self {
-        let row_groups =
-            RowGroupReader::new(reader, schema, row_groups, chunk_size, limit, page_indexes);
+        let row_groups = RowGroupReader::new(reader, schema, row_groups, chunk_size, limit);
 
         Self {
             row_groups,
@@ -116,7 +113,6 @@ pub struct RowGroupReader<R: Read + Seek> {
     row_groups: std::vec::IntoIter<RowGroupMetaData>,
     chunk_size: Option<usize>,
     remaining_rows: usize,
-    page_indexes: Option<std::vec::IntoIter<Vec<Vec<Vec<FilteredPage>>>>>,
 }
 
 impl<R: Read + Seek> RowGroupReader<R> {
@@ -127,18 +123,13 @@ impl<R: Read + Seek> RowGroupReader<R> {
         row_groups: Vec<RowGroupMetaData>,
         chunk_size: Option<usize>,
         limit: Option<usize>,
-        page_indexes: Option<Vec<Vec<Vec<Vec<FilteredPage>>>>>,
     ) -> Self {
-        if let Some(pages) = &page_indexes {
-            assert_eq!(pages.len(), row_groups.len())
-        }
         Self {
             reader,
             schema,
             row_groups: row_groups.into_iter(),
             chunk_size,
             remaining_rows: limit.unwrap_or(usize::MAX),
-            page_indexes: page_indexes.map(|pages| pages.into_iter()),
         }
     }
 
@@ -158,24 +149,8 @@ impl<R: Read + Seek> RowGroupReader<R> {
             return Ok(None);
         };
 
-        let pages = self.page_indexes.as_mut().and_then(|iter| iter.next());
-
         // the number of rows depends on whether indexes are selected or not.
-        let num_rows = pages
-            .as_ref()
-            .map(|x| {
-                // first field, first column within that field
-                x[0][0]
-                    .iter()
-                    .map(|page| {
-                        page.selected_rows
-                            .iter()
-                            .map(|interval| interval.length)
-                            .sum::<usize>()
-                    })
-                    .sum()
-            })
-            .unwrap_or_else(|| row_group.num_rows());
+        let num_rows = row_group.num_rows();
 
         let column_chunks = read_columns_many(
             &mut self.reader,
@@ -183,7 +158,6 @@ impl<R: Read + Seek> RowGroupReader<R> {
             self.schema.fields.clone(),
             self.chunk_size,
             Some(self.remaining_rows),
-            pages,
         )?;
 
         let result = RowGroupDeserializer::new(column_chunks, num_rows, Some(self.remaining_rows));

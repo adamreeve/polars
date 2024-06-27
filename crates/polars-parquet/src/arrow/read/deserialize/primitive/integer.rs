@@ -10,10 +10,7 @@ use polars_error::PolarsResult;
 use super::super::utils::MaybeNext;
 use super::super::{utils, PagesIter};
 use super::basic::{finish, PrimitiveDecoder, State as PrimitiveState};
-use crate::arrow::read::deserialize::utils::{
-    get_selected_rows, FilteredOptionalPageValidity, OptionalPageValidity,
-};
-use crate::parquet::deserialize::SliceFilteredIter;
+use crate::arrow::read::deserialize::utils::OptionalPageValidity;
 use crate::parquet::encoding::{delta_bitpacked, Encoding};
 use crate::parquet::page::{split_buffer, DataPage, DictPage};
 use crate::parquet::schema::Repetition;
@@ -28,11 +25,6 @@ where
     Common(PrimitiveState<'a, T>),
     DeltaBinaryPackedRequired(delta_bitpacked::Decoder<'a>),
     DeltaBinaryPackedOptional(OptionalPageValidity<'a>, delta_bitpacked::Decoder<'a>),
-    FilteredDeltaBinaryPackedRequired(SliceFilteredIter<delta_bitpacked::Decoder<'a>>),
-    FilteredDeltaBinaryPackedOptional(
-        FilteredOptionalPageValidity<'a>,
-        delta_bitpacked::Decoder<'a>,
-    ),
 }
 
 impl<'a, T> utils::PageState<'a> for State<'a, T>
@@ -44,8 +36,6 @@ where
             State::Common(state) => state.len(),
             State::DeltaBinaryPackedRequired(state) => state.size_hint().0,
             State::DeltaBinaryPackedOptional(state, _) => state.len(),
-            State::FilteredDeltaBinaryPackedRequired(state) => state.size_hint().0,
-            State::FilteredDeltaBinaryPackedOptional(state, _) => state.len(),
         }
     }
 }
@@ -90,37 +80,18 @@ where
     ) -> PolarsResult<Self::State> {
         let is_optional =
             page.descriptor.primitive_type.field_info.repetition == Repetition::Optional;
-        let is_filtered = page.selected_rows().is_some();
 
-        match (page.encoding(), dict, is_optional, is_filtered) {
-            (Encoding::DeltaBinaryPacked, _, false, false) => {
+        match (page.encoding(), dict, is_optional) {
+            (Encoding::DeltaBinaryPacked, _, false) => {
                 let values = split_buffer(page)?.values;
                 Ok(delta_bitpacked::Decoder::try_new(values)
                     .map(State::DeltaBinaryPackedRequired)?)
             },
-            (Encoding::DeltaBinaryPacked, _, true, false) => {
+            (Encoding::DeltaBinaryPacked, _, true) => {
                 let values = split_buffer(page)?.values;
                 Ok(State::DeltaBinaryPackedOptional(
                     OptionalPageValidity::try_new(page)?,
                     delta_bitpacked::Decoder::try_new(values)?,
-                ))
-            },
-            (Encoding::DeltaBinaryPacked, _, false, true) => {
-                let values = split_buffer(page)?.values;
-                let values = delta_bitpacked::Decoder::try_new(values)?;
-
-                let rows = get_selected_rows(page);
-                let values = SliceFilteredIter::new(values, rows);
-
-                Ok(State::FilteredDeltaBinaryPackedRequired(values))
-            },
-            (Encoding::DeltaBinaryPacked, _, true, true) => {
-                let values = split_buffer(page)?.values;
-                let values = delta_bitpacked::Decoder::try_new(values)?;
-
-                Ok(State::FilteredDeltaBinaryPackedOptional(
-                    FilteredOptionalPageValidity::try_new(page)?,
-                    values,
                 ))
             },
             _ => self.0.build_state(page, dict).map(State::Common),
@@ -160,26 +131,6 @@ where
                         .map(|x| x.unwrap().as_())
                         .map(self.0.op),
                 )
-            },
-            State::FilteredDeltaBinaryPackedRequired(page) => {
-                values.extend(
-                    page.by_ref()
-                        .map(|x| x.unwrap().as_())
-                        .map(self.0.op)
-                        .take(remaining),
-                );
-            },
-            State::FilteredDeltaBinaryPackedOptional(page_validity, page_values) => {
-                utils::extend_from_decoder(
-                    validity,
-                    page_validity,
-                    Some(remaining),
-                    values,
-                    page_values
-                        .by_ref()
-                        .map(|x| x.unwrap().as_())
-                        .map(self.0.op),
-                );
             },
         }
         Ok(())

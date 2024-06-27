@@ -51,16 +51,15 @@ impl<'a> NestedDecoder<'a> for BooleanDecoder {
     ) -> PolarsResult<Self::State> {
         let is_optional =
             page.descriptor.primitive_type.field_info.repetition == Repetition::Optional;
-        let is_filtered = page.selected_rows().is_some();
 
-        match (page.encoding(), is_optional, is_filtered) {
-            (Encoding::Plain, true, false) => {
+        match (page.encoding(), is_optional) {
+            (Encoding::Plain, true) => {
                 let values = split_buffer(page)?.values;
                 let values = BitmapIter::new(values, 0, values.len() * 8);
 
                 Ok(State::Optional(values))
             },
-            (Encoding::Plain, false, false) => {
+            (Encoding::Plain, false) => {
                 let values = split_buffer(page)?.values;
                 let values = BitmapIter::new(values, 0, values.len() * 8);
 

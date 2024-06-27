@@ -100,16 +100,6 @@ impl<'a, O: Offset> utils::Decoder<'a> for BinaryDecoder<O> {
                 page_values.values = remaining;
                 values_.extend_from_slice(consumed);
             },
-            BinaryState::FilteredRequired(page) => {
-                for x in page.values.by_ref().take(additional) {
-                    values.push(x)
-                }
-            },
-            BinaryState::FilteredDelta(page) => {
-                for x in page.values.by_ref().take(additional) {
-                    values.push(x)
-                }
-            },
             BinaryState::OptionalDictionary(page_validity, page_values) => {
                 // Already done on the dict.
                 validate_utf8 = false;
@@ -140,54 +130,6 @@ impl<'a, O: Offset> utils::Decoder<'a> for BinaryDecoder<O> {
                     values.push(x)
                 }
                 page.values.get_result()?;
-            },
-            BinaryState::FilteredOptional(page_validity, page_values) => {
-                extend_from_decoder(
-                    validity,
-                    page_validity,
-                    Some(additional),
-                    values,
-                    page_values.by_ref(),
-                );
-            },
-            BinaryState::FilteredOptionalDelta(page_validity, page_values) => {
-                extend_from_decoder(
-                    validity,
-                    page_validity,
-                    Some(additional),
-                    values,
-                    page_values.by_ref(),
-                );
-            },
-            BinaryState::FilteredRequiredDictionary(page) => {
-                // Already done on the dict.
-                validate_utf8 = false;
-                let page_dict = &page.dict;
-                for x in &mut page
-                    .values
-                    .by_ref()
-                    .map(|index| page_dict.value(index as usize))
-                    .take(additional)
-                {
-                    values.push(x)
-                }
-                page.values.iter.get_result()?;
-            },
-            BinaryState::FilteredOptionalDictionary(page_validity, page_values) => {
-                // Already done on the dict.
-                validate_utf8 = false;
-                let page_dict = &page_values.dict;
-                extend_from_decoder(
-                    validity,
-                    page_validity,
-                    Some(additional),
-                    values,
-                    &mut page_values
-                        .values
-                        .by_ref()
-                        .map(|index| page_dict.value(index as usize)),
-                );
-                page_values.values.get_result()?;
             },
             BinaryState::OptionalDeltaByteArray(page_validity, page_values) => extend_from_decoder(
                 validity,

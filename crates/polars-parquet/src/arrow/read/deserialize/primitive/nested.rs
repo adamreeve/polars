@@ -92,24 +92,23 @@ where
     ) -> PolarsResult<Self::State> {
         let is_optional =
             page.descriptor.primitive_type.field_info.repetition == Repetition::Optional;
-        let is_filtered = page.selected_rows().is_some();
 
-        match (page.encoding(), dict, is_optional, is_filtered) {
-            (Encoding::PlainDictionary | Encoding::RleDictionary, Some(dict), false, false) => {
+        match (page.encoding(), dict, is_optional) {
+            (Encoding::PlainDictionary | Encoding::RleDictionary, Some(dict), false) => {
                 ValuesDictionary::try_new(page, dict).map(State::RequiredDictionary)
             },
-            (Encoding::PlainDictionary | Encoding::RleDictionary, Some(dict), true, false) => {
+            (Encoding::PlainDictionary | Encoding::RleDictionary, Some(dict), true) => {
                 ValuesDictionary::try_new(page, dict).map(State::OptionalDictionary)
             },
-            (Encoding::Plain, _, true, false) => Values::try_new::<P>(page).map(State::Optional),
-            (Encoding::Plain, _, false, false) => Values::try_new::<P>(page).map(State::Required),
-            (Encoding::ByteStreamSplit, _, false, false) => {
+            (Encoding::Plain, _, true) => Values::try_new::<P>(page).map(State::Optional),
+            (Encoding::Plain, _, false) => Values::try_new::<P>(page).map(State::Required),
+            (Encoding::ByteStreamSplit, _, false) => {
                 let values = split_buffer(page)?.values;
                 Ok(State::RequiredByteStreamSplit(
                     byte_stream_split::Decoder::try_new(values, std::mem::size_of::<P>())?,
                 ))
             },
-            (Encoding::ByteStreamSplit, _, true, false) => {
+            (Encoding::ByteStreamSplit, _, true) => {
                 let values = split_buffer(page)?.values;
                 Ok(State::OptionalByteStreamSplit(
                     byte_stream_split::Decoder::try_new(values, std::mem::size_of::<P>())?,

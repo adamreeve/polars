@@ -7,9 +7,8 @@ use polars_error::PolarsResult;
 
 use super::{ArrayIter, RowGroupMetaData};
 use crate::arrow::read::column_iter_to_arrays;
-use crate::parquet::indexes::FilteredPage;
 use crate::parquet::metadata::ColumnChunkMetaData;
-use crate::parquet::read::{BasicDecompressor, IndexedPageReader, PageMetaData, PageReader};
+use crate::parquet::read::{BasicDecompressor, PageReader};
 
 /// An [`Iterator`] of [`RecordBatchT`] that (dynamically) adapts a vector of iterators of [`Array`] into
 /// an iterator of [`RecordBatchT`].
@@ -148,59 +147,27 @@ pub fn to_deserializer<'a>(
     field: Field,
     num_rows: usize,
     chunk_size: Option<usize>,
-    pages: Option<Vec<Vec<FilteredPage>>>,
 ) -> PolarsResult<ArrayIter<'a>> {
     let chunk_size = chunk_size.map(|c| c.min(num_rows));
 
-    let (columns, types) = if let Some(pages) = pages {
-        let (columns, types): (Vec<_>, Vec<_>) = columns
-            .into_iter()
-            .zip(pages)
-            .map(|((column_meta, chunk), mut pages)| {
-                // de-offset the start, since we read in chunks (and offset is from start of file)
-                let mut meta: PageMetaData = column_meta.into();
-                pages
-                    .iter_mut()
-                    .for_each(|page| page.start -= meta.column_start);
-                meta.column_start = 0;
-                let pages = IndexedPageReader::new_with_page_meta(
-                    std::io::Cursor::new(chunk),
-                    meta,
-                    pages,
-                    vec![],
-                    vec![],
-                );
-                let pages = Box::new(pages) as Pages;
-                (
-                    BasicDecompressor::new(pages, vec![]),
-                    &column_meta.descriptor().descriptor.primitive_type,
-                )
-            })
-            .unzip();
-
-        (columns, types)
-    } else {
-        let (columns, types): (Vec<_>, Vec<_>) = columns
-            .into_iter()
-            .map(|(column_meta, chunk)| {
-                let len = chunk.len();
-                let pages = PageReader::new(
-                    std::io::Cursor::new(chunk),
-                    column_meta,
-                    std::sync::Arc::new(|_, _| true),
-                    vec![],
-                    len * 2 + 1024,
-                );
-                let pages = Box::new(pages) as Pages;
-                (
-                    BasicDecompressor::new(pages, vec![]),
-                    &column_meta.descriptor().descriptor.primitive_type,
-                )
-            })
-            .unzip();
-
-        (columns, types)
-    };
+    let (columns, types): (Vec<_>, Vec<_>) = columns
+        .into_iter()
+        .map(|(column_meta, chunk)| {
+            let len = chunk.len();
+            let pages = PageReader::new(
+                std::io::Cursor::new(chunk),
+                column_meta,
+                std::sync::Arc::new(|_, _| true),
+                vec![],
+                len * 2 + 1024,
+            );
+            let pages = Box::new(pages) as Pages;
+            (
+                BasicDecompressor::new(pages, vec![]),
+                &column_meta.descriptor().descriptor.primitive_type,
+            )
+        })
+        .unzip();
 
     column_iter_to_arrays(columns, types, field, chunk_size, num_rows)
 }
@@ -221,7 +188,6 @@ pub fn read_columns_many<'a, R: Read + Seek>(
     fields: Vec<Field>,
     chunk_size: Option<usize>,
     limit: Option<usize>,
-    pages: Option<Vec<Vec<Vec<FilteredPage>>>>,
 ) -> PolarsResult<Vec<ArrayIter<'a>>> {
     let num_rows = row_group.num_rows();
     let num_rows = limit.map(|limit| limit.min(num_rows)).unwrap_or(num_rows);
@@ -233,20 +199,9 @@ pub fn read_columns_many<'a, R: Read + Seek>(
         .map(|field| read_columns(reader, row_group.columns(), &field.name))
         .collect::<PolarsResult<Vec<_>>>()?;
 
-    if let Some(pages) = pages {
-        field_columns
-            .into_iter()
-            .zip(fields)
-            .zip(pages)
-            .map(|((columns, field), pages)| {
-                to_deserializer(columns, field, num_rows, chunk_size, Some(pages))
-            })
-            .collect()
-    } else {
-        field_columns
-            .into_iter()
-            .zip(fields)
-            .map(|(columns, field)| to_deserializer(columns, field, num_rows, chunk_size, None))
-            .collect()
-    }
+    field_columns
+        .into_iter()
+        .zip(fields)
+        .map(|(columns, field)| to_deserializer(columns, field, num_rows, chunk_size))
+        .collect()
 }

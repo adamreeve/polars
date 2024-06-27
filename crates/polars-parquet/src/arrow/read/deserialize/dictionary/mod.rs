@@ -7,11 +7,10 @@ use arrow::bitmap::MutableBitmap;
 use arrow::datatypes::ArrowDataType;
 
 use super::utils::{
-    self, dict_indices_decoder, extend_from_decoder, get_selected_rows, DecodedState, Decoder,
-    FilteredOptionalPageValidity, MaybeNext, OptionalPageValidity,
+    self, dict_indices_decoder, extend_from_decoder, DecodedState, Decoder, MaybeNext,
+    OptionalPageValidity,
 };
 use super::PagesIter;
-use crate::parquet::deserialize::SliceFilteredIter;
 use crate::parquet::encoding::hybrid_rle::HybridRleDecoder;
 use crate::parquet::encoding::Encoding;
 use crate::parquet::page::{DataPage, DictPage, Page};
@@ -22,8 +21,6 @@ use crate::parquet::schema::Repetition;
 pub enum State<'a> {
     Optional(Optional<'a>),
     Required(Required<'a>),
-    FilteredRequired(FilteredRequired<'a>),
-    FilteredOptional(FilteredOptionalPageValidity<'a>, HybridRleDecoder<'a>),
 }
 
 #[derive(Debug)]
@@ -34,22 +31,6 @@ pub struct Required<'a> {
 impl<'a> Required<'a> {
     fn try_new(page: &'a DataPage) -> PolarsResult<Self> {
         let values = dict_indices_decoder(page)?;
-        Ok(Self { values })
-    }
-}
-
-#[derive(Debug)]
-pub struct FilteredRequired<'a> {
-    values: SliceFilteredIter<HybridRleDecoder<'a>>,
-}
-
-impl<'a> FilteredRequired<'a> {
-    fn try_new(page: &'a DataPage) -> PolarsResult<Self> {
-        let values = dict_indices_decoder(page)?;
-
-        let rows = get_selected_rows(page);
-        let values = SliceFilteredIter::new(values, rows);
-
         Ok(Self { values })
     }
 }
@@ -76,8 +57,6 @@ impl<'a> utils::PageState<'a> for State<'a> {
         match self {
             State::Optional(optional) => optional.validity.len(),
             State::Required(required) => required.values.size_hint().0,
-            State::FilteredRequired(required) => required.values.size_hint().0,
-            State::FilteredOptional(validity, _) => validity.len(),
         }
     }
 }
@@ -117,23 +96,13 @@ where
     ) -> PolarsResult<Self::State> {
         let is_optional =
             page.descriptor.primitive_type.field_info.repetition == Repetition::Optional;
-        let is_filtered = page.selected_rows().is_some();
 
-        match (page.encoding(), is_optional, is_filtered) {
-            (Encoding::PlainDictionary | Encoding::RleDictionary, false, false) => {
+        match (page.encoding(), is_optional) {
+            (Encoding::PlainDictionary | Encoding::RleDictionary, false) => {
                 Required::try_new(page).map(State::Required)
             },
-            (Encoding::PlainDictionary | Encoding::RleDictionary, true, false) => {
+            (Encoding::PlainDictionary | Encoding::RleDictionary, true) => {
                 Optional::try_new(page).map(State::Optional)
-            },
-            (Encoding::PlainDictionary | Encoding::RleDictionary, false, true) => {
-                FilteredRequired::try_new(page).map(State::FilteredRequired)
-            },
-            (Encoding::PlainDictionary | Encoding::RleDictionary, true, true) => {
-                Ok(State::FilteredOptional(
-                    FilteredOptionalPageValidity::try_new(page)?,
-                    dict_indices_decoder(page)?,
-                ))
             },
             _ => Err(utils::not_implemented(page)),
         }
@@ -187,43 +156,6 @@ where
                         .take(remaining),
                 );
                 page.values.get_result()?;
-            },
-            State::FilteredOptional(page_validity, page_values) => {
-                extend_from_decoder(
-                    validity,
-                    page_validity,
-                    Some(remaining),
-                    values,
-                    &mut page_values.by_ref().map(|x| {
-                        let x: K = match (x as usize).try_into() {
-                            Ok(key) => key,
-                            // todo: convert this to an error.
-                            Err(_) => {
-                                panic!("The maximum key is too small")
-                            },
-                        };
-                        x
-                    }),
-                );
-                page_values.get_result()?;
-            },
-            State::FilteredRequired(page) => {
-                values.extend(
-                    page.values
-                        .by_ref()
-                        .map(|x| {
-                            let x: K = match (x as usize).try_into() {
-                                Ok(key) => key,
-                                // todo: convert this to an error.
-                                Err(_) => {
-                                    panic!("The maximum key is too small")
-                                },
-                            };
-                            x
-                        })
-                        .take(remaining),
-                );
-                page.values.iter.get_result()?;
             },
         }
         Ok(())

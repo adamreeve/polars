@@ -6,119 +6,25 @@ use arrow::pushable::Pushable;
 use polars_error::{polars_err, to_compute_err, PolarsError, PolarsResult};
 
 use super::super::PagesIter;
-use crate::parquet::deserialize::{
-    FilteredHybridEncoded, FilteredHybridRleDecoderIter, HybridDecoderBitmapIter, HybridEncoded,
-};
+use crate::parquet::deserialize::{FilteredHybridEncoded, HybridDecoderBitmapIter, HybridEncoded};
 use crate::parquet::encoding::hybrid_rle;
-use crate::parquet::indexes::Interval;
 use crate::parquet::page::{split_buffer, DataPage, DictPage, Page};
 use crate::parquet::schema::Repetition;
 
 pub fn not_implemented(page: &DataPage) -> PolarsError {
     let is_optional = page.descriptor.primitive_type.field_info.repetition == Repetition::Optional;
-    let is_filtered = page.selected_rows().is_some();
     let required = if is_optional { "optional" } else { "required" };
-    let is_filtered = if is_filtered { ", index-filtered" } else { "" };
     polars_err!(ComputeError:
-        "Decoding {:?} \"{:?}\"-encoded {} {} parquet pages not yet implemented",
+        "Decoding {:?} \"{:?}\"-encoded {} parquet pages not yet implemented",
         page.descriptor.primitive_type.physical_type,
         page.encoding(),
         required,
-        is_filtered,
     )
 }
 
 /// The state of a partially deserialized page
 pub(super) trait PageValidity<'a> {
     fn next_limited(&mut self, limit: usize) -> Option<FilteredHybridEncoded<'a>>;
-}
-
-#[derive(Debug, Clone)]
-pub struct FilteredOptionalPageValidity<'a> {
-    iter: FilteredHybridRleDecoderIter<'a>,
-    current: Option<(FilteredHybridEncoded<'a>, usize)>,
-}
-
-impl<'a> FilteredOptionalPageValidity<'a> {
-    pub fn try_new(page: &'a DataPage) -> PolarsResult<Self> {
-        let validity = split_buffer(page)?.def;
-
-        let iter = hybrid_rle::Decoder::new(validity, 1);
-        let iter = HybridDecoderBitmapIter::new(iter, page.num_values());
-        let selected_rows = get_selected_rows(page);
-        let iter = FilteredHybridRleDecoderIter::new(iter, selected_rows);
-
-        Ok(Self {
-            iter,
-            current: None,
-        })
-    }
-
-    pub fn len(&self) -> usize {
-        self.iter.len()
-    }
-}
-
-pub fn get_selected_rows(page: &DataPage) -> VecDeque<Interval> {
-    page.selected_rows()
-        .unwrap_or(&[Interval::new(0, page.num_values())])
-        .iter()
-        .copied()
-        .collect()
-}
-
-impl<'a> PageValidity<'a> for FilteredOptionalPageValidity<'a> {
-    fn next_limited(&mut self, limit: usize) -> Option<FilteredHybridEncoded<'a>> {
-        let (run, own_offset) = if let Some((run, offset)) = self.current {
-            (run, offset)
-        } else {
-            // a new run
-            let run = self.iter.next()?; // no run -> None
-            self.current = Some((run, 0));
-            return self.next_limited(limit);
-        };
-
-        match run {
-            FilteredHybridEncoded::Bitmap {
-                values,
-                offset,
-                length,
-            } => {
-                let run_length = length - own_offset;
-
-                let length = limit.min(run_length);
-
-                if length == run_length {
-                    self.current = None;
-                } else {
-                    self.current = Some((run, own_offset + length));
-                }
-
-                Some(FilteredHybridEncoded::Bitmap {
-                    values,
-                    offset,
-                    length,
-                })
-            },
-            FilteredHybridEncoded::Repeated { is_set, length } => {
-                let run_length = length - own_offset;
-
-                let length = limit.min(run_length);
-
-                if length == run_length {
-                    self.current = None;
-                } else {
-                    self.current = Some((run, own_offset + length));
-                }
-
-                Some(FilteredHybridEncoded::Repeated { is_set, length })
-            },
-            FilteredHybridEncoded::Skipped(set) => {
-                self.current = None;
-                Some(FilteredHybridEncoded::Skipped(set))
-            },
-        }
-    }
 }
 
 pub struct Zip<V, I> {
@@ -478,8 +384,4 @@ pub(super) fn dict_indices_decoder(page: &DataPage) -> PolarsResult<hybrid_rle::
 
 pub(super) fn page_is_optional(page: &DataPage) -> bool {
     page.descriptor.primitive_type.field_info.repetition == Repetition::Optional
-}
-
-pub(super) fn page_is_filtered(page: &DataPage) -> bool {
-    page.selected_rows().is_some()
 }

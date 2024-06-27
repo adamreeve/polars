@@ -85,13 +85,12 @@ impl<'a, K: DictionaryKey> NestedDecoder<'a> for DictionaryDecoder<K> {
     ) -> PolarsResult<Self::State> {
         let is_optional =
             page.descriptor.primitive_type.field_info.repetition == Repetition::Optional;
-        let is_filtered = page.selected_rows().is_some();
 
-        match (page.encoding(), is_optional, is_filtered) {
-            (Encoding::RleDictionary | Encoding::PlainDictionary, true, false) => {
+        match (page.encoding(), is_optional) {
+            (Encoding::RleDictionary | Encoding::PlainDictionary, true) => {
                 dict_indices_decoder(page).map(State::Optional)
             },
-            (Encoding::RleDictionary | Encoding::PlainDictionary, false, false) => {
+            (Encoding::RleDictionary | Encoding::PlainDictionary, false) => {
                 Required::try_new(page).map(State::Required)
             },
             _ => Err(not_implemented(page)),

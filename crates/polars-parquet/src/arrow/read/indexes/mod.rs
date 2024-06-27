@@ -1,11 +1,10 @@
 //! API to perform page-level filtering (also known as indexes)
 use crate::parquet::error::ParquetError;
 use crate::parquet::indexes::{
-    select_pages, BooleanIndex, ByteIndex, FixedLenByteIndex, Index as ParquetIndex, NativeIndex,
-    PageLocation,
+    BooleanIndex, ByteIndex, FixedLenByteIndex, Index as ParquetIndex, NativeIndex, PageLocation,
 };
 use crate::parquet::metadata::{ColumnChunkMetaData, RowGroupMetaData};
-use crate::parquet::read::{read_columns_indexes as _read_columns_indexes, read_pages_locations};
+use crate::parquet::read::read_columns_indexes as _read_columns_indexes;
 use crate::parquet::schema::types::PhysicalType as ParquetPhysicalType;
 
 mod binary;
@@ -21,7 +20,7 @@ use arrow::datatypes::{ArrowDataType, Field, PhysicalType, PrimitiveType};
 use polars_error::{polars_bail, PolarsResult};
 
 use super::get_field_pages;
-pub use crate::parquet::indexes::{FilteredPage, Interval};
+pub use crate::parquet::indexes::Interval;
 
 /// Page statistics of an Arrow field.
 #[derive(Debug, PartialEq)]
@@ -312,66 +311,4 @@ pub fn compute_page_row_intervals(
         })
         .chain(std::iter::once(last));
     pages_lengths.collect()
-}
-
-/// Reads all page locations and index locations (IO-bounded) and uses `predicate` to compute
-/// the set of [`FilteredPage`] that fulfill the predicate.
-///
-/// The non-trivial argument of this function is `predicate`, that controls which pages are selected.
-/// Its signature contains 2 arguments:
-/// * 0th argument (indexes): contains one [`ColumnPageStatistics`] (page statistics) per field.
-///   Use it to evaluate the predicate against
-/// * 1th argument (intervals): contains one [`Vec<Vec<Interval>>`] (row positions) per field.
-///   For each field, the outermost vector corresponds to each parquet column:
-///   a primitive field contains 1 column, a struct field with 2 primitive fields contain 2 columns.
-///   The inner `Vec<Interval>` contains one [`Interval`] per page: its length equals the length of [`ColumnPageStatistics`].
-///
-/// It returns a single [`Vec<Interval>`] denoting the set of intervals that the predicate selects (over all columns).
-///
-/// This returns one item per `field`. For each field, there is one item per column (for non-nested types it returns one column)
-/// and finally [`Vec<FilteredPage>`], that corresponds to the set of selected pages.
-pub fn read_filtered_pages<
-    R: Read + Seek,
-    F: Fn(&[FieldPageStatistics], &[Vec<Vec<Interval>>]) -> Vec<Interval>,
->(
-    reader: &mut R,
-    row_group: &RowGroupMetaData,
-    fields: &[Field],
-    predicate: F,
-    //is_intersection: bool,
-) -> PolarsResult<Vec<Vec<Vec<FilteredPage>>>> {
-    let num_rows = row_group.num_rows();
-
-    // one vec per column
-    let locations = read_pages_locations(reader, row_group.columns())?;
-    // one Vec<Vec<>> per field (non-nested contain a single entry on the first column)
-    let locations = fields
-        .iter()
-        .map(|field| get_field_pages(row_group.columns(), &locations, &field.name))
-        .collect::<Vec<_>>();
-
-    // one ColumnPageStatistics per field
-    let indexes = read_columns_indexes(reader, row_group.columns(), fields)?;
-
-    let intervals = locations
-        .iter()
-        .map(|locations| {
-            locations
-                .iter()
-                .map(|locations| Ok(compute_page_row_intervals(locations, num_rows)?))
-                .collect::<PolarsResult<Vec<_>>>()
-        })
-        .collect::<PolarsResult<Vec<_>>>()?;
-
-    let intervals = predicate(&indexes, &intervals);
-
-    locations
-        .into_iter()
-        .map(|locations| {
-            locations
-                .into_iter()
-                .map(|locations| Ok(select_pages(&intervals, locations, num_rows)?))
-                .collect::<PolarsResult<Vec<_>>>()
-        })
-        .collect()
 }

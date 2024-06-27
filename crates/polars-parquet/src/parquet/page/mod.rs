@@ -1,7 +1,6 @@
 use crate::parquet::compression::Compression;
 use crate::parquet::encoding::{get_length, Encoding};
 use crate::parquet::error::{ParquetError, ParquetResult};
-use crate::parquet::indexes::Interval;
 use crate::parquet::metadata::Descriptor;
 pub use crate::parquet::parquet_bridge::{DataPageHeaderExt, PageType};
 use crate::parquet::statistics::Statistics;
@@ -23,9 +22,7 @@ pub struct CompressedDataPage {
     pub(crate) compression: Compression,
     uncompressed_page_size: usize,
     pub(crate) descriptor: Descriptor,
-
-    // The offset and length in rows
-    pub(crate) selected_rows: Option<Vec<Interval>>,
+    pub(crate) rows: Option<usize>,
 }
 
 impl CompressedDataPage {
@@ -44,7 +41,7 @@ impl CompressedDataPage {
             compression,
             uncompressed_page_size,
             descriptor,
-            rows.map(|x| vec![Interval::new(0, x)]),
+            rows,
         )
     }
 
@@ -55,7 +52,7 @@ impl CompressedDataPage {
         compression: Compression,
         uncompressed_page_size: usize,
         descriptor: Descriptor,
-        selected_rows: Option<Vec<Interval>>,
+        rows: Option<usize>,
     ) -> Self {
         Self {
             header,
@@ -63,7 +60,7 @@ impl CompressedDataPage {
             compression,
             uncompressed_page_size,
             descriptor,
-            selected_rows,
+            rows,
         }
     }
 
@@ -86,14 +83,12 @@ impl CompressedDataPage {
         self.compression
     }
 
-    /// the rows to be selected by this page.
-    /// When `None`, all rows are to be considered.
-    pub fn selected_rows(&self) -> Option<&[Interval]> {
-        self.selected_rows.as_deref()
-    }
-
     pub fn num_values(&self) -> usize {
         self.header.num_values()
+    }
+
+    pub fn num_rows(&self) -> Option<usize> {
+        self.rows
     }
 
     /// Decodes the raw statistics into a statistics
@@ -108,11 +103,6 @@ impl CompressedDataPage {
                 .as_ref()
                 .map(|x| Statistics::deserialize(x, self.descriptor.primitive_type.clone())),
         }
-    }
-
-    #[inline]
-    pub fn select_rows(&mut self, selected_rows: Vec<Interval>) {
-        self.selected_rows = Some(selected_rows);
     }
 }
 
@@ -138,7 +128,7 @@ pub struct DataPage {
     pub(super) header: DataPageHeader,
     pub(super) buffer: Vec<u8>,
     pub descriptor: Descriptor,
-    pub selected_rows: Option<Vec<Interval>>,
+    pub rows: Option<usize>,
 }
 
 impl DataPage {
@@ -148,25 +138,20 @@ impl DataPage {
         descriptor: Descriptor,
         rows: Option<usize>,
     ) -> Self {
-        Self::new_read(
-            header,
-            buffer,
-            descriptor,
-            rows.map(|x| vec![Interval::new(0, x)]),
-        )
+        Self::new_read(header, buffer, descriptor, rows)
     }
 
     pub(crate) fn new_read(
         header: DataPageHeader,
         buffer: Vec<u8>,
         descriptor: Descriptor,
-        selected_rows: Option<Vec<Interval>>,
+        rows: Option<usize>,
     ) -> Self {
         Self {
             header,
             buffer,
             descriptor,
-            selected_rows,
+            rows,
         }
     }
 
@@ -178,12 +163,6 @@ impl DataPage {
         &self.buffer
     }
 
-    /// the rows to be selected by this page.
-    /// When `None`, all rows are to be considered.
-    pub fn selected_rows(&self) -> Option<&[Interval]> {
-        self.selected_rows.as_deref()
-    }
-
     /// Returns a mutable reference to the internal buffer.
     /// Useful to recover the buffer after the page has been decoded.
     pub fn buffer_mut(&mut self) -> &mut Vec<u8> {
@@ -192,6 +171,10 @@ impl DataPage {
 
     pub fn num_values(&self) -> usize {
         self.header.num_values()
+    }
+
+    pub fn num_rows(&self) -> Option<usize> {
+        self.rows
     }
 
     pub fn encoding(&self) -> Encoding {
@@ -287,9 +270,9 @@ impl CompressedPage {
         }
     }
 
-    pub(crate) fn selected_rows(&self) -> Option<&[Interval]> {
+    pub(crate) fn num_rows(&self) -> Option<usize> {
         match self {
-            CompressedPage::Data(page) => page.selected_rows(),
+            CompressedPage::Data(page) => page.num_rows(),
             CompressedPage::Dict(_) => None,
         }
     }

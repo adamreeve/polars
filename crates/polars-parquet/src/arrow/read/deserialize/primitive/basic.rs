@@ -7,38 +7,11 @@ use arrow::types::NativeType;
 use polars_error::PolarsResult;
 use polars_utils::iter::FallibleIterator;
 
-use super::super::utils::{
-    get_selected_rows, FilteredOptionalPageValidity, MaybeNext, OptionalPageValidity,
-};
+use super::super::utils::{MaybeNext, OptionalPageValidity};
 use super::super::{utils, PagesIter};
-use crate::parquet::deserialize::SliceFilteredIter;
 use crate::parquet::encoding::{byte_stream_split, hybrid_rle, Encoding};
 use crate::parquet::page::{split_buffer, DataPage, DictPage};
 use crate::parquet::types::{decode, NativeType as ParquetNativeType};
-
-#[derive(Debug)]
-pub(super) struct FilteredRequiredValues<'a> {
-    values: SliceFilteredIter<std::slice::ChunksExact<'a, u8>>,
-}
-
-impl<'a> FilteredRequiredValues<'a> {
-    pub fn try_new<P: ParquetNativeType>(page: &'a DataPage) -> PolarsResult<Self> {
-        let values = split_buffer(page)?.values;
-        assert_eq!(values.len() % std::mem::size_of::<P>(), 0);
-
-        let values = values.chunks_exact(std::mem::size_of::<P>());
-
-        let rows = get_selected_rows(page);
-        let values = SliceFilteredIter::new(values, rows);
-
-        Ok(Self { values })
-    }
-
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.values.size_hint().0
-    }
-}
 
 #[derive(Debug)]
 pub(super) struct Values<'a> {
@@ -95,8 +68,6 @@ where
     Required(Values<'a>),
     RequiredDictionary(ValuesDictionary<'a, T>),
     OptionalDictionary(OptionalPageValidity<'a>, ValuesDictionary<'a, T>),
-    FilteredRequired(FilteredRequiredValues<'a>),
-    FilteredOptional(FilteredOptionalPageValidity<'a>, Values<'a>),
     RequiredByteStreamSplit(byte_stream_split::Decoder<'a>),
     OptionalByteStreamSplit(OptionalPageValidity<'a>, byte_stream_split::Decoder<'a>),
 }
@@ -111,8 +82,6 @@ where
             State::Required(values) => values.len(),
             State::RequiredDictionary(values) => values.len(),
             State::OptionalDictionary(optional, _) => optional.len(),
-            State::FilteredRequired(values) => values.len(),
-            State::FilteredOptional(optional, _) => optional.len(),
             State::RequiredByteStreamSplit(decoder) => decoder.len(),
             State::OptionalByteStreamSplit(optional, _) => optional.len(),
         }
@@ -169,39 +138,31 @@ where
         dict: Option<&'a Self::Dict>,
     ) -> PolarsResult<Self::State> {
         let is_optional = utils::page_is_optional(page);
-        let is_filtered = utils::page_is_filtered(page);
 
-        match (page.encoding(), dict, is_optional, is_filtered) {
-            (Encoding::PlainDictionary | Encoding::RleDictionary, Some(dict), false, false) => {
+        match (page.encoding(), dict, is_optional) {
+            (Encoding::PlainDictionary | Encoding::RleDictionary, Some(dict), false) => {
                 ValuesDictionary::try_new(page, dict).map(State::RequiredDictionary)
             },
-            (Encoding::PlainDictionary | Encoding::RleDictionary, Some(dict), true, false) => {
+            (Encoding::PlainDictionary | Encoding::RleDictionary, Some(dict), true) => {
                 Ok(State::OptionalDictionary(
                     OptionalPageValidity::try_new(page)?,
                     ValuesDictionary::try_new(page, dict)?,
                 ))
             },
-            (Encoding::Plain, _, true, false) => {
+            (Encoding::Plain, _, true) => {
                 let validity = OptionalPageValidity::try_new(page)?;
                 let values = Values::try_new::<P>(page)?;
 
                 Ok(State::Optional(validity, values))
             },
-            (Encoding::Plain, _, false, false) => Ok(State::Required(Values::try_new::<P>(page)?)),
-            (Encoding::Plain, _, false, true) => {
-                FilteredRequiredValues::try_new::<P>(page).map(State::FilteredRequired)
-            },
-            (Encoding::Plain, _, true, true) => Ok(State::FilteredOptional(
-                FilteredOptionalPageValidity::try_new(page)?,
-                Values::try_new::<P>(page)?,
-            )),
-            (Encoding::ByteStreamSplit, _, false, false) => {
+            (Encoding::Plain, _, false) => Ok(State::Required(Values::try_new::<P>(page)?)),
+            (Encoding::ByteStreamSplit, _, false) => {
                 let values = split_buffer(page)?.values;
                 Ok(State::RequiredByteStreamSplit(
                     byte_stream_split::Decoder::try_new(values, std::mem::size_of::<P>())?,
                 ))
             },
-            (Encoding::ByteStreamSplit, _, true, false) => {
+            (Encoding::ByteStreamSplit, _, true) => {
                 let validity = OptionalPageValidity::try_new(page)?;
                 let values = split_buffer(page)?.values;
                 Ok(State::OptionalByteStreamSplit(
@@ -259,24 +220,6 @@ where
                 let op1 = |index: u32| page.dict[index as usize];
                 values.extend(page.values.by_ref().map(op1).take(remaining));
                 page.values.get_result()?;
-            },
-            State::FilteredRequired(page) => {
-                values.extend(
-                    page.values
-                        .by_ref()
-                        .map(decode)
-                        .map(self.op)
-                        .take(remaining),
-                );
-            },
-            State::FilteredOptional(page_validity, page_values) => {
-                utils::extend_from_decoder(
-                    validity,
-                    page_validity,
-                    Some(remaining),
-                    values,
-                    page_values.values.by_ref().map(decode).map(self.op),
-                );
             },
             State::RequiredByteStreamSplit(decoder) => {
                 values.extend(decoder.iter_converted(decode).map(self.op).take(remaining));

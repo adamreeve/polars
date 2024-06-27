@@ -6,7 +6,6 @@ use parquet_format_safe::thrift::protocol::TCompactInputProtocol;
 use super::PageIterator;
 use crate::parquet::compression::Compression;
 use crate::parquet::error::{ParquetError, ParquetResult};
-use crate::parquet::indexes::Interval;
 use crate::parquet::metadata::{ColumnChunkMetaData, Descriptor};
 use crate::parquet::page::{
     CompressedDataPage, CompressedDictPage, CompressedPage, DataPageHeader, PageType,
@@ -225,7 +224,7 @@ pub(super) fn finish_page(
     data: &mut Vec<u8>,
     compression: Compression,
     descriptor: &Descriptor,
-    selected_rows: Option<Vec<Interval>>,
+    rows: Option<usize>,
 ) -> ParquetResult<CompressedPage> {
     let type_ = page_header.type_.try_into()?;
     let uncompressed_page_size = page_header.uncompressed_page_size.try_into()?;
@@ -262,7 +261,7 @@ pub(super) fn finish_page(
                 compression,
                 uncompressed_page_size,
                 descriptor.clone(),
-                selected_rows,
+                rows,
             )))
         },
         PageType::DataPageV2 => {
@@ -278,7 +277,7 @@ pub(super) fn finish_page(
                 compression,
                 uncompressed_page_size,
                 descriptor.clone(),
-                selected_rows,
+                rows,
             )))
         },
     }

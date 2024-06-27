@@ -7,13 +7,10 @@ use arrow::datatypes::ArrowDataType;
 use polars_error::PolarsResult;
 
 use super::super::utils::{
-    extend_from_decoder, get_selected_rows, next, DecodedState, Decoder,
-    FilteredOptionalPageValidity, MaybeNext, OptionalPageValidity,
+    extend_from_decoder, next, DecodedState, Decoder, MaybeNext, OptionalPageValidity,
 };
 use super::super::{utils, PagesIter};
-use crate::parquet::deserialize::{
-    HybridDecoderBitmapIter, HybridRleBooleanIter, SliceFilteredIter,
-};
+use crate::parquet::deserialize::{HybridDecoderBitmapIter, HybridRleBooleanIter};
 use crate::parquet::encoding::{hybrid_rle, Encoding};
 use crate::parquet::page::{split_buffer, DataPage, DictPage};
 
@@ -47,36 +44,11 @@ impl<'a> Required<'a> {
     }
 }
 
-#[derive(Debug)]
-struct FilteredRequired<'a> {
-    values: SliceFilteredIter<BitmapIter<'a>>,
-}
-
-impl<'a> FilteredRequired<'a> {
-    pub fn try_new(page: &'a DataPage) -> PolarsResult<Self> {
-        let values = split_buffer(page)?.values;
-        // todo: replace this by an iterator over slices, for faster deserialization
-        let values = BitmapIter::new(values, 0, page.num_values());
-
-        let rows = get_selected_rows(page);
-        let values = SliceFilteredIter::new(values, rows);
-
-        Ok(Self { values })
-    }
-
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.values.size_hint().0
-    }
-}
-
 // The state of a `DataPage` of `Boolean` parquet boolean type
 #[derive(Debug)]
 enum State<'a> {
     Optional(OptionalPageValidity<'a>, Values<'a>),
     Required(Required<'a>),
-    FilteredRequired(FilteredRequired<'a>),
-    FilteredOptional(FilteredOptionalPageValidity<'a>, Values<'a>),
     RleOptional(
         OptionalPageValidity<'a>,
         HybridRleBooleanIter<'a, HybridDecoderBitmapIter<'a>>,
@@ -88,8 +60,6 @@ impl<'a> State<'a> {
         match self {
             State::Optional(validity, _) => validity.len(),
             State::Required(page) => page.length - page.offset,
-            State::FilteredRequired(page) => page.len(),
-            State::FilteredOptional(optional, _) => optional.len(),
             State::RleOptional(optional, _) => optional.len(),
         }
     }
@@ -121,22 +91,14 @@ impl<'a> Decoder<'a> for BooleanDecoder {
         _: Option<&'a Self::Dict>,
     ) -> PolarsResult<Self::State> {
         let is_optional = utils::page_is_optional(page);
-        let is_filtered = utils::page_is_filtered(page);
 
-        match (page.encoding(), is_optional, is_filtered) {
-            (Encoding::Plain, true, false) => Ok(State::Optional(
+        match (page.encoding(), is_optional) {
+            (Encoding::Plain, true) => Ok(State::Optional(
                 OptionalPageValidity::try_new(page)?,
                 Values::try_new(page)?,
             )),
-            (Encoding::Plain, false, false) => Ok(State::Required(Required::new(page))),
-            (Encoding::Plain, true, true) => Ok(State::FilteredOptional(
-                FilteredOptionalPageValidity::try_new(page)?,
-                Values::try_new(page)?,
-            )),
-            (Encoding::Plain, false, true) => {
-                Ok(State::FilteredRequired(FilteredRequired::try_new(page)?))
-            },
-            (Encoding::Rle, true, false) => {
+            (Encoding::Plain, false) => Ok(State::Required(Required::new(page))),
+            (Encoding::Rle, true) => {
                 let optional = OptionalPageValidity::try_new(page)?;
                 let values = split_buffer(page)?.values;
                 // For boolean values the length is pre-pended.
@@ -176,21 +138,6 @@ impl<'a> Decoder<'a> for BooleanDecoder {
                 let remaining = remaining.min(page.length - page.offset);
                 values.extend_from_slice(page.values, page.offset, remaining);
                 page.offset += remaining;
-            },
-            State::FilteredRequired(page) => {
-                values.reserve(remaining);
-                for item in page.values.by_ref().take(remaining) {
-                    values.push(item)
-                }
-            },
-            State::FilteredOptional(page_validity, page_values) => {
-                utils::extend_from_decoder(
-                    validity,
-                    page_validity,
-                    Some(remaining),
-                    values,
-                    page_values.0.by_ref(),
-                );
             },
             State::RleOptional(page_validity, page_values) => {
                 utils::extend_from_decoder(

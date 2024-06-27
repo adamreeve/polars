@@ -54,19 +54,14 @@ impl<'a> NestedDecoder<'a> for BinaryDecoder {
     ) -> PolarsResult<Self::State> {
         let is_optional =
             page.descriptor.primitive_type.field_info.repetition == Repetition::Optional;
-        let is_filtered = page.selected_rows().is_some();
 
-        match (page.encoding(), dict, is_optional, is_filtered) {
-            (Encoding::Plain, _, true, false) => {
-                Ok(State::Optional(Optional::try_new(page, self.size)?))
-            },
-            (Encoding::Plain, _, false, false) => {
-                Ok(State::Required(Required::new(page, self.size)))
-            },
-            (Encoding::PlainDictionary | Encoding::RleDictionary, Some(dict), false, false) => {
+        match (page.encoding(), dict, is_optional) {
+            (Encoding::Plain, _, true) => Ok(State::Optional(Optional::try_new(page, self.size)?)),
+            (Encoding::Plain, _, false) => Ok(State::Required(Required::new(page, self.size))),
+            (Encoding::PlainDictionary | Encoding::RleDictionary, Some(dict), false) => {
                 RequiredDictionary::try_new(page, dict).map(State::RequiredDictionary)
             },
-            (Encoding::PlainDictionary | Encoding::RleDictionary, Some(dict), true, false) => {
+            (Encoding::PlainDictionary | Encoding::RleDictionary, Some(dict), true) => {
                 OptionalDictionary::try_new(page, dict).map(State::OptionalDictionary)
             },
             _ => Err(not_implemented(page)),

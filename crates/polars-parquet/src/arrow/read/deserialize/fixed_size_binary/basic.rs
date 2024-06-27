@@ -8,13 +8,11 @@ use polars_error::PolarsResult;
 use polars_utils::iter::FallibleIterator;
 
 use super::super::utils::{
-    dict_indices_decoder, extend_from_decoder, get_selected_rows, next, not_implemented,
-    DecodedState, Decoder, FilteredOptionalPageValidity, MaybeNext, OptionalPageValidity,
-    PageState,
+    dict_indices_decoder, extend_from_decoder, next, not_implemented, DecodedState, Decoder,
+    MaybeNext, OptionalPageValidity, PageState,
 };
 use super::super::PagesIter;
 use super::utils::FixedSizeBinary;
-use crate::parquet::deserialize::SliceFilteredIter;
 use crate::parquet::encoding::{hybrid_rle, Encoding};
 use crate::parquet::page::{split_buffer, DataPage, DictPage};
 use crate::read::deserialize::utils;
@@ -50,29 +48,6 @@ impl<'a> Required<'a> {
         let values = page.buffer();
         assert_eq!(values.len() % size, 0);
         let values = values.chunks_exact(size);
-        Self { values }
-    }
-
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.values.size_hint().0
-    }
-}
-
-#[derive(Debug)]
-pub(super) struct FilteredRequired<'a> {
-    pub values: SliceFilteredIter<std::slice::ChunksExact<'a, u8>>,
-}
-
-impl<'a> FilteredRequired<'a> {
-    fn new(page: &'a DataPage, size: usize) -> Self {
-        let values = page.buffer();
-        assert_eq!(values.len() % size, 0);
-        let values = values.chunks_exact(size);
-
-        let rows = get_selected_rows(page);
-        let values = SliceFilteredIter::new(values, rows);
-
         Self { values }
     }
 
@@ -126,11 +101,6 @@ enum State<'a> {
     Required(Required<'a>),
     RequiredDictionary(RequiredDictionary<'a>),
     OptionalDictionary(OptionalDictionary<'a>),
-    FilteredRequired(FilteredRequired<'a>),
-    FilteredOptional(
-        FilteredOptionalPageValidity<'a>,
-        std::slice::ChunksExact<'a, u8>,
-    ),
 }
 
 impl<'a> PageState<'a> for State<'a> {
@@ -140,8 +110,6 @@ impl<'a> PageState<'a> for State<'a> {
             State::Required(state) => state.len(),
             State::RequiredDictionary(state) => state.len(),
             State::OptionalDictionary(state) => state.validity.len(),
-            State::FilteredRequired(state) => state.len(),
-            State::FilteredOptional(state, _) => state.len(),
         }
     }
 }
@@ -167,31 +135,15 @@ impl<'a> Decoder<'a> for BinaryDecoder {
         dict: Option<&'a Self::Dict>,
     ) -> PolarsResult<Self::State> {
         let is_optional = utils::page_is_optional(page);
-        let is_filtered = utils::page_is_filtered(page);
 
-        match (page.encoding(), dict, is_optional, is_filtered) {
-            (Encoding::Plain, _, true, false) => {
-                Ok(State::Optional(Optional::try_new(page, self.size)?))
-            },
-            (Encoding::Plain, _, false, false) => {
-                Ok(State::Required(Required::new(page, self.size)))
-            },
-            (Encoding::PlainDictionary | Encoding::RleDictionary, Some(dict), false, false) => {
+        match (page.encoding(), dict, is_optional) {
+            (Encoding::Plain, _, true) => Ok(State::Optional(Optional::try_new(page, self.size)?)),
+            (Encoding::Plain, _, false) => Ok(State::Required(Required::new(page, self.size))),
+            (Encoding::PlainDictionary | Encoding::RleDictionary, Some(dict), false) => {
                 RequiredDictionary::try_new(page, dict).map(State::RequiredDictionary)
             },
-            (Encoding::PlainDictionary | Encoding::RleDictionary, Some(dict), true, false) => {
+            (Encoding::PlainDictionary | Encoding::RleDictionary, Some(dict), true) => {
                 OptionalDictionary::try_new(page, dict).map(State::OptionalDictionary)
-            },
-            (Encoding::Plain, None, false, true) => Ok(State::FilteredRequired(
-                FilteredRequired::new(page, self.size),
-            )),
-            (Encoding::Plain, _, true, true) => {
-                let values = split_buffer(page)?.values;
-
-                Ok(State::FilteredOptional(
-                    FilteredOptionalPageValidity::try_new(page)?,
-                    values.chunks_exact(self.size),
-                ))
             },
             _ => Err(not_implemented(page)),
         }
@@ -225,11 +177,6 @@ impl<'a> Decoder<'a> for BinaryDecoder {
                     values.push(x)
                 }
             },
-            State::FilteredRequired(page) => {
-                for x in page.values.by_ref().take(remaining) {
-                    values.push(x)
-                }
-            },
             State::OptionalDictionary(page) => {
                 extend_from_decoder(
                     validity,
@@ -256,15 +203,6 @@ impl<'a> Decoder<'a> for BinaryDecoder {
                     values.push(x)
                 }
                 page.values.get_result()?;
-            },
-            State::FilteredOptional(page_validity, page_values) => {
-                extend_from_decoder(
-                    validity,
-                    page_validity,
-                    Some(remaining),
-                    values,
-                    page_values.by_ref(),
-                );
             },
         }
         Ok(())
