@@ -57,6 +57,7 @@ impl JoinCoalesce {
             },
             #[cfg(feature = "asof_join")]
             AsOf(_) => matches!(self, JoinSpecific | CoalesceColumns),
+            Between(_) => matches!(self, JoinSpecific | CoalesceColumns),
             Cross => false,
             #[cfg(feature = "semi_anti_join")]
             Semi | Anti => false,
@@ -117,6 +118,7 @@ pub enum JoinType {
     Semi,
     #[cfg(feature = "semi_anti_join")]
     Anti,
+    Between(BetweenOptions),
 }
 
 impl From<JoinType> for JoinArgs {
@@ -134,6 +136,7 @@ impl Display for JoinType {
             Full { .. } => "FULL",
             #[cfg(feature = "asof_join")]
             AsOf(_) => "ASOF",
+            Between(_) => "BETWEEN",
             Cross => "CROSS",
             #[cfg(feature = "semi_anti_join")]
             Semi => "SEMI",

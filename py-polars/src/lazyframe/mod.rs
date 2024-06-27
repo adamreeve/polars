@@ -939,6 +939,47 @@ impl PyLazyFrame {
             .into())
     }
 
+    #[pyo3(signature = (other, left_on, right_on_lower, right_on_upper, left_by, right_by, allow_parallel, force_parallel, suffix, coalesce))]
+    fn join_asof(
+        &self,
+        other: Self,
+        left_on: PyExpr,
+        right_on_lower: PyExpr,
+        right_on_upper: PyExpr,
+        left_by: Option<Vec<PyBackedStr>>,
+        right_by: Option<Vec<PyBackedStr>>,
+        allow_parallel: bool,
+        force_parallel: bool,
+        suffix: String,
+        coalesce: Option<bool>,
+    ) -> PyResult<Self> {
+        let coalesce = match coalesce {
+            None => JoinCoalesce::JoinSpecific,
+            Some(true) => JoinCoalesce::CoalesceColumns,
+            Some(false) => JoinCoalesce::KeepColumns,
+        };
+        let ldf = self.ldf.clone();
+        let other = other.ldf;
+        let left_on = left_on.inner;
+        let right_on_lower = right_on_lower.inner;
+        let right_on_upper = right_on_upper.inner;
+        Ok(ldf
+            .join_builder()
+            .with(other)
+            .left_on([left_on])
+            .right_on([right_on_lower, right_on_upper])  // Is this super hacky?
+            .allow_parallel(allow_parallel)
+            .force_parallel(force_parallel)
+            .coalesce(coalesce)
+            .how(JoinType::Between(BetweenOptions {
+                left_by: left_by.map(strings_to_smartstrings),
+                right_by: right_by.map(strings_to_smartstrings),
+            }))
+            .suffix(suffix)
+            .finish()
+            .into())
+    }
+
     fn join(
         &self,
         other: Self,

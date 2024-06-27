@@ -1,6 +1,7 @@
 mod args;
 #[cfg(feature = "asof_join")]
 mod asof;
+mod between;
 #[cfg(feature = "dtype-categorical")]
 mod checks;
 mod cross_join;
@@ -18,6 +19,7 @@ pub use args::*;
 use arrow::trusted_len::TrustedLen;
 #[cfg(feature = "asof_join")]
 pub use asof::{AsOfOptions, AsofJoin, AsofJoinBy, AsofStrategy};
+pub use between::BetweenOptions;
 #[cfg(feature = "dtype-categorical")]
 pub(crate) use checks::*;
 pub use cross_join::CrossJoin;
@@ -133,7 +135,6 @@ pub trait DataFrameJoinOps: IntoDf {
         }
 
         let should_coalesce = args.should_coalesce();
-        assert_eq!(selected_left.len(), selected_right.len());
 
         #[cfg(feature = "chunked_ids")]
         {
@@ -174,30 +175,39 @@ pub trait DataFrameJoinOps: IntoDf {
             }
         }
 
-        if let Some((l, r)) = selected_left
-            .iter()
-            .zip(&selected_right)
-            .find(|(l, r)| l.dtype() != r.dtype())
-        {
-            polars_bail!(
+        if (matches!(args.how, JoinType::Between(_))) {
+            assert_eq!(selected_left.len(), 1);
+            assert_eq!(selected_right.len(), 2);
+
+            // TODO: Verify types and error on any categorical dtypes
+        } else {
+            assert_eq!(selected_left.len(), selected_right.len());
+
+            if let Some((l, r)) = selected_left
+                .iter()
+                .zip(&selected_right)
+                .find(|(l, r)| l.dtype() != r.dtype())
+            {
+                polars_bail!(
                 ComputeError:
                     format!(
                         "datatypes of join keys don't match - `{}`: {} on left does not match `{}`: {} on right",
                         l.name(), l.dtype(), r.name(), r.dtype()
                     )
-            );
-        };
+                );
+            };
 
-        #[cfg(feature = "dtype-categorical")]
-        for (l, r) in selected_left.iter_mut().zip(selected_right.iter_mut()) {
-            match _check_categorical_src(l.dtype(), r.dtype()) {
-                Ok(_) => {},
-                Err(_) => {
-                    let (ca_left, ca_right) =
-                        make_categoricals_compatible(l.categorical()?, r.categorical()?)?;
-                    *l = ca_left.into_series().with_name(l.name());
-                    *r = ca_right.into_series().with_name(r.name());
-                },
+            #[cfg(feature = "dtype-categorical")]
+            for (l, r) in selected_left.iter_mut().zip(selected_right.iter_mut()) {
+                match _check_categorical_src(l.dtype(), r.dtype()) {
+                    Ok(_) => {},
+                    Err(_) => {
+                        let (ca_left, ca_right) =
+                            make_categoricals_compatible(l.categorical()?, r.categorical()?)?;
+                        *l = ca_left.into_series().with_name(l.name());
+                        *r = ca_right.into_series().with_name(r.name());
+                    },
+                }
             }
         }
 
@@ -256,6 +266,11 @@ pub trait DataFrameJoinOps: IntoDf {
                         panic!("expected by arguments on both sides")
                     },
                 },
+                JoinType::Between(options) => match (options.left_by, options.right_by) {
+                    _ => {
+                        panic!("Between join not implemented")
+                    },
+                },
                 JoinType::Cross => {
                     unreachable!()
                 },
@@ -275,6 +290,9 @@ pub trait DataFrameJoinOps: IntoDf {
         match args.how {
             #[cfg(feature = "asof_join")]
             JoinType::AsOf(_) => polars_bail!(
+                ComputeError: "asof join not supported for join on multiple keys"
+            ),
+            JoinType::Between(_) => polars_bail!(
                 ComputeError: "asof join not supported for join on multiple keys"
             ),
             JoinType::Cross => {

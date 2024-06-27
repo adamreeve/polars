@@ -3937,6 +3937,62 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
             )
         )
 
+    def join_between(
+        self,
+        other: LazyFrame,
+        *,
+        left_on: str | Expr,
+        right_on_lower: str | Expr,
+        right_on_upper: str | Expr,
+        by_left: str | Sequence[str] | None = None,
+        by_right: str | Sequence[str] | None = None,
+        by: str | Sequence[str] | None = None,
+        suffix: str = "_right",
+        allow_parallel: bool = True,
+        force_parallel: bool = False,
+        coalesce: bool | None = None,
+    ) -> LazyFrame:
+        if not isinstance(other, LazyFrame):
+            msg = f"expected `other` join table to be a LazyFrame, not a {type(other).__name__!r}"
+            raise TypeError(msg)
+
+        if left_on is None or right_on_lower is None or right_on_upper is None:
+            msg = "you must pass the columns to join on as an argument"
+            raise ValueError(msg)
+
+        if by is not None:
+            by_left_ = [by] if isinstance(by, str) else by
+            by_right_ = by_left_
+        elif (by_left is not None) and (by_right is not None):
+            by_left_ = [by_left] if isinstance(by_left, str) else by_left
+            by_right_ = [by_right] if isinstance(by_right, str) else by_right
+        else:
+            # no by
+            by_left_ = None
+            by_right_ = None
+
+        if not isinstance(left_on, pl.Expr):
+            left_on = F.col(left_on)
+        if not isinstance(right_on_lower, pl.Expr):
+            right_on_lower = F.col(right_on_lower)
+        if not isinstance(right_on_upper, pl.Expr):
+            right_on_upper = F.col(right_on_upper)
+
+        return self._from_pyldf(
+            self._ldf.join_between(
+                other._ldf,
+                left_on._pyexpr,
+                right_on_lower._pyexpr,
+                right_on_upper._pyexpr,
+                by_left_,
+                by_right_,
+                allow_parallel,
+                force_parallel,
+                suffix,
+                coalesce=coalesce,
+            )
+        )
+
     def join(
         self,
         other: LazyFrame,

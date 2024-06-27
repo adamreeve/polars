@@ -6568,6 +6568,53 @@ class DataFrame:
             .collect(_eager=True)
         )
 
+    def join_between(
+        self,
+        other: DataFrame,
+        *,
+        left_on: str | Expr,
+        right_on_lower: str | Expr,
+        right_on_upper: str | Expr,
+        by_left: str | Sequence[str] | None = None,
+        by_right: str | Sequence[str] | None = None,
+        by: str | Sequence[str] | None = None,
+        suffix: str = "_right",
+        allow_parallel: bool = True,
+        force_parallel: bool = False,
+        coalesce: bool | None = None,
+    ) -> DataFrame:
+        if not isinstance(other, DataFrame):
+            msg = f"expected `other` join table to be a DataFrame, got {type(other).__name__!r}"
+            raise TypeError(msg)
+
+        if not isinstance(left_on, (str, pl.Expr)):
+            msg = f"expected `left_on` to be str or Expr, got {type(left_on).__name__!r}"
+            raise TypeError(msg)
+        elif not isinstance(right_on_lower, (str, pl.Expr)):
+            msg = f"expected `right_on_lower` to be str or Expr, got {type(right_on_lower).__name__!r}"
+            raise TypeError(msg)
+        elif not isinstance(right_on_upper, (str, pl.Expr)):
+            msg = f"expected `right_on_upper` to be str or Expr, got {type(right_on_upper).__name__!r}"
+            raise TypeError(msg)
+
+        return (
+            self.lazy()
+            .join_between(
+                other.lazy(),
+                left_on=left_on,
+                right_on_lower=right_on_lower,
+                right_on_upper=right_on_upper,
+                by_left=by_left,
+                by_right=by_right,
+                by=by,
+                suffix=suffix,
+                allow_parallel=allow_parallel,
+                force_parallel=force_parallel,
+                coalesce=coalesce,
+            )
+            .collect(_eager=True)
+        )
+
     def join(
         self,
         other: DataFrame,
