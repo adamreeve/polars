@@ -32,7 +32,7 @@ use arrow::record_batch::RecordBatch;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use smartstring::alias::String as SmartString;
-
+use polars_utils::float::IsFloat;
 use crate::chunked_array::cast::CastOptions;
 #[cfg(feature = "row_hash")]
 use crate::hashing::_df_rows_to_hashes_threaded_vertical;
@@ -3014,6 +3014,10 @@ impl DataFrame {
         let l1_order = x
             .arg_sort(l1_sort_options)
             .slice(x.null_count() as i64, x.len() - x.null_count());
+        let l1_order = with_match_physical_numeric_polars_type!(x.dtype(), |$T| {
+            let ca: &ChunkedArray<$T> = x.as_ref().as_ref().as_ref();
+            remove_nans_from_order(ca, l1_order, l1_descending)
+        });
 
         let l1_array = with_match_physical_numeric_polars_type!(x.dtype(), |$T| {
             let ca: &ChunkedArray<$T> = x.as_ref().as_ref().as_ref();
@@ -3031,6 +3035,10 @@ impl DataFrame {
             y_ordered.null_count() as i64,
             y_ordered.len() - y_ordered.null_count(),
         );
+        let l2_order = with_match_physical_numeric_polars_type!(y.dtype(), |$T| {
+            let ca: &ChunkedArray<$T> = y_ordered.as_ref().as_ref().as_ref();
+            remove_nans_from_order(ca, l2_order, l2_descending)
+        });
 
         // Create a bit array with order corresponding to L1,
         // denoting which entries have been visited while traversing L2.
@@ -3394,6 +3402,52 @@ where
         });
     }
     Ok(array)
+}
+
+fn remove_nans_from_order<T>(
+    ca: &ChunkedArray<T>,
+    order: IdxCa,
+    descending: bool
+) -> IdxCa
+where
+    T: PolarsNumericType,
+    T::Native: IsFloat
+{
+    if !T::Native::is_float() {
+        return order;
+    }
+
+    // TODO: Exponential search rather than linear
+    let mut nan_count: usize = 0;
+    if descending {
+        // NaNs are first
+        for idx in order.into_no_null_iter() {
+            match ca.get(idx as usize) {
+                None => {}
+                Some(x) if x.is_nan() => {
+                    nan_count += 1;
+                }
+                Some(_) => {
+                    break;
+                }
+            }
+        }
+        order.slice(nan_count as i64, order.len() - nan_count)
+    } else {
+        // NaNs last
+        for idx in order.into_no_null_iter().rev() {
+            match ca.get(idx as usize) {
+                None => {}
+                Some(x) if x.is_nan() => {
+                    nan_count += 1;
+                }
+                Some(_) => {
+                    break;
+                }
+            }
+        }
+        order.slice(0, order.len() - nan_count)
+    }
 }
 
 /// Bit array with a filter to speed up searching for set bits,
