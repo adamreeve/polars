@@ -204,7 +204,7 @@ pub trait DataFrameJoinOps: IntoDf {
         }
 
         if let JoinType::IEJoin(options) = args.how {
-            return iejoin::join_dataframes(
+            return iejoin::iejoin(
                 left_df,
                 other,
                 selected_left,

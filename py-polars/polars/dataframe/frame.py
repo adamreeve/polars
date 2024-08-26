@@ -7063,7 +7063,7 @@ class DataFrame:
             .collect(_eager=True)
         )
 
-    def ie_join(
+    def inequality_join(
         self,
         other: DataFrame,
         *,
@@ -7071,14 +7071,16 @@ class DataFrame:
         suffix: str = "_right",
     ) -> DataFrame:
         """
-        Perform a join using inequality operations.
+        Perform a join using two inequality expressions.
 
         Parameters
         ----------
         other
             DataFrame to join with.
         on
-            Inequality expressions to join with,
+            A sequence of two inequality expressions to join on, where each expression
+            is in the form `left_hand_side_expr op right_hand_side_expr` and op
+            is one of <, <=, >, >=.
             for example [pl.col("a") < pl.col("b"), pl.col("c") > pl.col("d")]
         suffix
             Suffix to append to columns with a duplicate name.
@@ -7086,10 +7088,6 @@ class DataFrame:
         Returns
         -------
         DataFrame
-
-        See Also
-        --------
-        join_asof
         """
         if not isinstance(other, DataFrame):
             msg = f"expected `other` join table to be a DataFrame, got {type(other).__name__!r}"
@@ -7097,7 +7095,7 @@ class DataFrame:
 
         return (
             self.lazy()
-            .ie_join(
+            .inequality_join(
                 other.lazy(),
                 on=on,
                 suffix=suffix,
