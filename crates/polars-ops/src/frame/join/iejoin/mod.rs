@@ -114,38 +114,15 @@ pub fn iejoin(
     };
     let mut match_count = 0;
 
-    if is_strict(op2) {
-        // For strict inequalities, we rely on using a stable sort of l2 so that
-        // p values only increase as we traverse a run of equal y values.
-        // To handle inclusive comparisons in x and duplicate x values we also need the
-        // sort of l1 to be stable, so that the left hand side entries come before the right
-        // hand side entries (as we mark visited entries from the right hand side).
-        for p in l2_order.into_no_null_iter() {
-            match_count += l1_array.process_entry(
-                p as usize,
-                &mut bit_array,
-                op1,
-                &mut left_row_ids_builder,
-                &mut right_row_ids_builder,
-            );
-
-            if slice_end.is_some_and(|end| match_count >= end) {
-                break;
-            }
-        }
-    } else {
-        let l2_array = with_match_physical_numeric_polars_type!(y.dtype(), |$T| {
-            let ca: &ChunkedArray<$T> = y_ordered.as_ref().as_ref().as_ref();
-            build_l2_array(ca, &l2_order)
-        })?;
-        // For non-strict inequalities in l2, we need to track runs of equal y values and only
-        // check for matches after we reach the end of the run and have marked all rhs entries
-        // in the run as visited.
-        let mut run_start = 0;
-        for i in 0..l2_array.len() {
-            let p = l2_array[i].l1_index;
-            l1_array.mark_visited(p as usize, &mut bit_array);
-            if l2_array[i].run_end {
+    let l2_array = with_match_physical_numeric_polars_type!(y.dtype(), |$T| {
+        let ca: &ChunkedArray<$T> = y_ordered.as_ref().as_ref().as_ref();
+        build_l2_array(ca, &l2_order)
+    })?;
+    let mut run_start = 0;
+    for i in 0..l2_array.len() {
+        if l2_array[i].run_end {
+            if is_strict(op2) {
+                // For strict operators, find matches in l1 first, then mark items in the run as visited
                 for l2_item in l2_array.iter().take(i + 1).skip(run_start) {
                     let p = l2_item.l1_index;
                     match_count += l1_array.process_lhs_entry(
@@ -156,12 +133,31 @@ pub fn iejoin(
                         &mut right_row_ids_builder,
                     );
                 }
-
-                run_start = i + 1;
-
-                if slice_end.is_some_and(|end| match_count >= end) {
-                    break;
+                for l2_item in l2_array.iter().take(i + 1).skip(run_start) {
+                    l1_array.mark_visited(l2_item.l1_index as usize, &mut bit_array);
                 }
+            } else {
+                // For non-strict operators, mark items in the run as visited first then find matches with the bit array,
+                // so we ensure we consider duplicate y values
+                for l2_item in l2_array.iter().take(i + 1).skip(run_start) {
+                    l1_array.mark_visited(l2_item.l1_index as usize, &mut bit_array);
+                }
+                for l2_item in l2_array.iter().take(i + 1).skip(run_start) {
+                    let p = l2_item.l1_index;
+                    match_count += l1_array.process_lhs_entry(
+                        p as usize,
+                        &bit_array,
+                        op1,
+                        &mut left_row_ids_builder,
+                        &mut right_row_ids_builder,
+                    );
+                }
+            }
+
+            run_start = i + 1;
+
+            if slice_end.is_some_and(|end| match_count >= end) {
+                break;
             }
         }
     }
@@ -200,15 +196,6 @@ struct L2Item {
 }
 
 trait L1Array {
-    fn process_entry(
-        &self,
-        l1_index: usize,
-        bit_array: &mut FilteredBitArray,
-        op1: InequalityOperator,
-        left_row_ids: &mut PrimitiveChunkedBuilder<IdxType>,
-        right_row_ids: &mut PrimitiveChunkedBuilder<IdxType>,
-    ) -> i64;
-
     fn process_lhs_entry(
         &self,
         l1_index: usize,
@@ -323,32 +310,6 @@ impl<T> L1Array for Vec<L1Item<T>>
 where
     T: NumericNative,
 {
-    fn process_entry(
-        &self,
-        l1_index: usize,
-        bit_array: &mut FilteredBitArray,
-        op1: InequalityOperator,
-        left_row_ids: &mut PrimitiveChunkedBuilder<IdxType>,
-        right_row_ids: &mut PrimitiveChunkedBuilder<IdxType>,
-    ) -> i64 {
-        let row_index = self[l1_index].row_index;
-        let from_lhs = row_index > 0;
-        if from_lhs {
-            find_matches_in_l1(
-                self,
-                l1_index,
-                row_index,
-                bit_array,
-                op1,
-                left_row_ids,
-                right_row_ids,
-            )
-        } else {
-            bit_array.set_bit(l1_index);
-            0
-        }
-    }
-
     fn process_lhs_entry(
         &self,
         l1_index: usize,
