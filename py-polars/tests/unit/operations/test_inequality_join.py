@@ -122,9 +122,14 @@ def test_ie_join_with_slice(offset: int, length: int) -> None:
             "cores_right": [1, 4, 2, 1, 4],
         }
     )
-    expected = expected_full.slice(offset, length)
 
-    assert_frame_equal(actual, expected)
+    # The ordering of the result should be deterministic but is arbitrary, so we can
+    # only verify that each row of the slice is present in the full expected result.
+    assert len(actual) == len(expected_full.slice(offset, length))
+
+    expected_rows = set(expected_full.iter_rows())
+    for row in actual.iter_rows():
+        assert row in expected_rows, f"{row} not in expected rows"
 
 
 def test_ie_join_with_expressions() -> None:
