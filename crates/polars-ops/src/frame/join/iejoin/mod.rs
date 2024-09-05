@@ -87,41 +87,10 @@ fn ie_join_impl_t<T: PolarsNumericType>(
             }
         }
     } else {
-        let ca: &ChunkedArray<T> = y_ordered.as_ref().as_ref();
-        let l2_array = build_l2_array(ca, l2_order)?;
-
-        // For non-strict inequalities in l2, we need to track runs of equal y values and only
-        // check for matches after we reach the end of the run and have marked all rhs entries
-        // in the run as visited.
-        let mut run_start = 0;
-
-        for i in 0..l2_array.len() {
-            // Elide bound checks
-            unsafe {
-                let item = l2_array.get_unchecked_release(i);
-                let p = item.l1_index;
-                l1_array.mark_visited(p as usize, &mut bit_array);
-
-                if item.run_end {
-                    for l2_item in l2_array.get_unchecked_release(run_start..i + 1) {
-                        let p = l2_item.l1_index;
-                        match_count += l1_array.process_lhs_entry(
-                            p as usize,
-                            &bit_array,
-                            op1,
-                            &mut left_row_idx,
-                            &mut right_row_idx,
-                        );
-                    }
-
-                    run_start = i + 1;
-
-                    if slice_end.is_some_and(|end| match_count >= end) {
-                        break;
-                    }
-                }
-            }
-        }
+        with_match_physical_numeric_polars_type!(y_ordered.dtype(), |$Ty| {
+            let ca: &ChunkedArray<$Ty> = y_ordered.as_ref().as_ref().as_ref();
+            traverse_l2_array_non_strict(ca, &l2_order, &l1_array, op1, slice_end, &mut bit_array, &mut left_row_idx, &mut right_row_idx);
+        });
     }
     Ok((left_row_idx, right_row_idx))
 }
@@ -238,15 +207,6 @@ struct L1Item<T> {
     row_index: i64,
     /// X value
     value: T,
-}
-
-/// Item in L2 array used in the IEJoin algorithm
-#[derive(Clone, Copy, Debug)]
-struct L2Item {
-    /// Corresponding index into the L1 array of
-    l1_index: IdxSize,
-    /// Whether this is the end of a run of equal y values
-    run_end: bool,
 }
 
 trait L1Array {
@@ -439,41 +399,64 @@ where
     Ok(array)
 }
 
-/// Create a vector of L2 items from the array of y values ordered according to the L1 order,
-/// and their ordering. We don't need to store actual y values but only track whether we're at
-/// the end of a run of equal values.
-fn build_l2_array<T>(ca: &ChunkedArray<T>, order: &[IdxSize]) -> PolarsResult<Vec<L2Item>>
-where
-    T: PolarsNumericType,
-    T::Native: TotalOrd,
+/// For the case of non-strict inequalities in l2,
+/// traverse the y values in sorted order (specified by the order parameter),
+/// adding left and right row indices corresponding to join matches.
+/// When the l2 inequality is non-strict, we need to track runs of equal y values and only
+/// check for matches after we reach the end of the run and have marked all rhs entries
+/// in the run as visited.
+/// The chunked array of y values before sorting should have rows ordered according to the L1 order.
+fn traverse_l2_array_non_strict<TxNative, Ty>(
+    ca: &ChunkedArray<Ty>,
+    order: &[IdxSize],
+    l1_array: &Vec<L1Item<TxNative>>,
+    op1: InequalityOperator,
+    slice_end: Option<i64>,
+    bit_array: &mut FilteredBitArray,
+    left_row_idx: &mut Vec<IdxSize>,
+    right_row_idx: &mut Vec<IdxSize>,
+) where
+    Ty: PolarsNumericType,
+    Ty::Native: TotalOrd,
+    TxNative: NumericNative,
+    TxNative: TotalOrd,
 {
     assert_eq!(ca.chunks().len(), 1);
-
-    let mut array = Vec::with_capacity(ca.len());
-    let mut prev_index = 0;
-    let mut prev_value = T::Native::default();
-
     let arr = ca.downcast_get(0).unwrap();
     // Even if there are nulls, they will not be selected by order.
     let values = arr.values().as_slice();
 
+    let mut match_count = 0;
+    let mut run_start = 0;
+    let mut prev_value = Ty::Native::default();
+
     for (i, l1_index) in order.iter().copied().enumerate() {
         debug_assert!(arr.get(l1_index as usize).is_some());
-        let value = unsafe { *values.get_unchecked(l1_index as usize) };
-        if i > 0 {
-            array.push(L2Item {
-                l1_index: prev_index,
-                run_end: value.tot_ne(&prev_value),
-            });
+        let value = unsafe { *values.get_unchecked_release(l1_index as usize) };
+
+        if i > 0 && value.tot_ne(&prev_value) {
+            for j in run_start..i {
+                let p = unsafe { *order.get_unchecked_release(j) } as usize;
+                match_count += unsafe {
+                    l1_array.process_lhs_entry(p, bit_array, op1, left_row_idx, right_row_idx)
+                };
+            }
+
+            if slice_end.is_some_and(|end| match_count >= end) {
+                // Early return if we've reached the end of the required slice
+                return;
+            }
+
+            run_start = i;
         }
-        prev_index = l1_index;
+
+        unsafe { l1_array.mark_visited(l1_index as usize, bit_array) };
+
         prev_value = value;
     }
-    if !order.is_empty() {
-        array.push(L2Item {
-            l1_index: prev_index,
-            run_end: true,
-        });
+
+    for j in run_start..order.len() {
+        let p = unsafe { *order.get_unchecked_release(j) } as usize;
+        unsafe { l1_array.process_lhs_entry(p, bit_array, op1, left_row_idx, right_row_idx) };
     }
-    Ok(array)
 }
