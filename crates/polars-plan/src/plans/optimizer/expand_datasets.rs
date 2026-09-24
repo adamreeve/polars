@@ -248,9 +248,9 @@ async fn resolve_heavy_footers(scan_ir: &mut IR) -> PolarsResult<()> {
     let cloud_options = unified_scan_args.cloud_options.as_ref();
 
     let FileScanIR::Parquet {
+        options,
         metadata_per_source,
         bytes_per_source,
-        ..
     } = scan_type.as_mut()
     else {
         return Ok(());
@@ -262,7 +262,14 @@ async fn resolve_heavy_footers(scan_ir: &mut IR) -> PolarsResult<()> {
         return Ok(());
     };
 
-    *metadata_per_source = resolve_for_splitting(sources, bytes, n_parts, cloud_options).await;
+    *metadata_per_source = resolve_for_splitting(
+        sources,
+        bytes,
+        n_parts,
+        cloud_options,
+        options.decryption_properties.as_ref(),
+    )
+    .await;
 
     Ok(())
 }
