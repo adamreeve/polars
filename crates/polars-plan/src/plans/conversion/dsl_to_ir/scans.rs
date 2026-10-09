@@ -323,7 +323,7 @@ pub(super) async fn parquet_file_info(
     resolve_heavy_sources: Option<NonZeroU32>,
     use_statistics: bool,
     #[allow(unused)] cloud_options: Option<&polars_io::cloud::CloudOptions>,
-    decryption_properties: Option<&polars_io::parquet::read::PlFileDecryptionProperties>,
+    decryption: Option<&polars_io::parquet::encryption::ParquetDecryption>,
 ) -> PolarsResult<(FileInfo, MetadataPerSource)> {
     use futures::stream::{FuturesOrdered, FuturesUnordered, StreamExt};
     use polars_core::error::feature_gated;
@@ -343,7 +343,7 @@ pub(super) async fn parquet_file_info(
                 let mut reader =
                     ParquetObjectStore::from_uri(first_path.clone(), cloud_options, None)
                         .await?
-                        .with_decryption_properties(decryption_properties.cloned());
+                        .with_decryption(decryption)?;
                 PolarsResult::Ok((
                     reader.schema().await?,
                     reader.num_rows().await?,
@@ -355,7 +355,7 @@ pub(super) async fn parquet_file_info(
             let mut cursor = Cursor::new(memslice);
             let metadata = polars_parquet::parquet::read::read_metadata_with_decryption(
                 &mut cursor,
-                decryption_properties.map(|p| &p.0),
+                polars_io::parquet::encryption::file_decryption_properties(decryption)?.as_ref(),
                 None,
             )?;
             let mut reader = ParquetReader::new(cursor);
@@ -426,12 +426,7 @@ pub(super) async fn parquet_file_info(
                 let rest_fut = async move {
                     let mut futures = (1..n_sources)
                         .map(|i| async move {
-                            read_parquet_num_rows(
-                                sources.at(i),
-                                cloud_options,
-                                decryption_properties,
-                            )
-                            .await
+                            read_parquet_num_rows(sources.at(i), cloud_options, decryption).await
                         })
                         .collect::<FuturesUnordered<_>>();
 
@@ -467,8 +462,7 @@ pub(super) async fn parquet_file_info(
                     debug_assert!(b.iter().all(|&size| size > 0));
                 });
                 let rest_fut = async move {
-                    let pairs =
-                        read_footers(sources, sample, cloud_options, decryption_properties).await;
+                    let pairs = read_footers(sources, sample, cloud_options, decryption).await;
                     let rows = pairs
                         .iter()
                         .fold(0usize, |acc, (_, m)| acc.saturating_add(m.num_rows));
@@ -545,13 +539,7 @@ pub(super) async fn parquet_file_info(
                 // with file 0; `None` marks a file that failed to decode.
                 let rest_fut = async move {
                     let mut futures = (1..n_sources)
-                        .map(|i| {
-                            read_parquet_metadata(
-                                sources.at(i),
-                                cloud_options,
-                                decryption_properties,
-                            )
-                        })
+                        .map(|i| read_parquet_metadata(sources.at(i), cloud_options, decryption))
                         .collect::<FuturesOrdered<_>>();
                     let mut rest: Vec<Option<FileMetadataRef>> = Vec::with_capacity(n_sources - 1);
                     while let Some(file_result) = futures.next().await {
@@ -1655,7 +1643,7 @@ enum CachedSourceKey {
         // Heavy-source selection depends on the sizes, not just the paths.
         bytes_per_source: Option<Buffer<u64>>,
         #[cfg(feature = "parquet")]
-        decryption_properties: Option<polars_io::parquet::read::PlFileDecryptionProperties>,
+        decryption: Option<polars_io::parquet::encryption::ParquetDecryption>,
     },
     CsvJson {
         paths: Buffer<PlRefPath>,
@@ -1714,7 +1702,7 @@ impl SourcesToFileInfo {
                                 bytes,
                                 n_parts,
                                 cloud_options,
-                                options.decryption_properties.as_ref(),
+                                options.decryption.as_ref(),
                             )
                             .await
                         },
@@ -1761,7 +1749,7 @@ impl SourcesToFileInfo {
                             unified_scan_args.resolve_heavy_sources,
                             options.use_statistics,
                             cloud_options,
-                            options.decryption_properties.as_ref(),
+                            options.decryption.as_ref(),
                         )
                         .await?;
 
@@ -2032,7 +2020,7 @@ impl SourcesToFileInfo {
                     schema_overwrite: options.schema.clone(),
                     resolve_heavy_sources: unified_scan_args.resolve_heavy_sources,
                     bytes_per_source: bytes_per_source.clone(),
-                    decryption_properties: options.decryption_properties.clone(),
+                    decryption: options.decryption.clone(),
                 };
 
                 let guard = self.inner.read().unwrap();
@@ -2047,7 +2035,7 @@ impl SourcesToFileInfo {
                     resolve_heavy_sources: None,
                     bytes_per_source: None,
                     #[cfg(feature = "parquet")]
-                    decryption_properties: None,
+                    decryption: None,
                 };
 
                 let guard = self.inner.read().unwrap();
