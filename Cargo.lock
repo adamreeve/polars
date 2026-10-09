@@ -2982,6 +2982,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "parquet-key-management"
+version = "0.7.1"
+source = "git+https://github.com/adamreeve/parquet-key-management-rs?branch=aws-lc#887403183c631c51aba872fb6ac8b11ff54f0070"
+dependencies = [
+ "async-trait",
+ "aws-lc-rs",
+ "base64 0.22.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "pem-rfc7468"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3691,6 +3703,7 @@ dependencies = [
  "num-traits",
  "numpy",
  "parking_lot",
+ "parquet-key-management",
  "polars",
  "polars-arrow",
  "polars-buffer",

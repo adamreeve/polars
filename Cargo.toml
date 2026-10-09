@@ -76,6 +76,9 @@ num-traits = "0.2"
 numpy = "0.29"
 object_store = { version = "0.14.2", default-features = false, features = ["fs"] }
 parking_lot = "0.12"
+parquet-key-management = { git = "https://github.com/adamreeve/parquet-key-management-rs", branch = "aws-lc", default-features = false, features = [
+  "aws-lc-rs",
+] }
 percent-encoding = "2.3"
 pin-project-lite = "0.2"
 proptest = { version = "1.6", default-features = false, features = ["std"] }

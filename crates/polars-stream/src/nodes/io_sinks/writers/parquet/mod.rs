@@ -125,11 +125,7 @@ impl FileWriterStarter for ParquetWriterStarter {
                     encodings: Buffer::clone(&encodings),
                     key_value_metadata,
                     num_leaf_columns,
-                    encryption_properties: self
-                        .options
-                        .encryption_properties
-                        .as_ref()
-                        .map(|p| Arc::clone(&p.0)),
+                    encryption: self.options.encryption.clone(),
                 }
                 .run(),
             ),

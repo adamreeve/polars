@@ -879,7 +879,7 @@ class PyLazyFrame:
         parallel: Any,
         low_memory: bool,
         use_statistics: bool,
-        decryption_properties: PyFileDecryptionProperties | None,
+        decryption: PyFileDecryptionProperties | None,
     ) -> PyLazyFrame: ...
     @staticmethod
     def new_from_ipc(
@@ -996,7 +996,7 @@ class PyLazyFrame:
         data_page_size: int | None,
         metadata: KeyValueMetadata | None,
         arrow_schema: ArrowSchemaExportable | None = None,
-        encryption_properties: PyFileEncryptionProperties | None = None,
+        encryption: PyFileEncryptionProperties | None = None,
     ) -> PyLazyFrame: ...
     def sink_ipc(
         self,

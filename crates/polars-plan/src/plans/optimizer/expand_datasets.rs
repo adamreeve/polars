@@ -490,7 +490,7 @@ async fn resolve_heavy_footers(scan_ir: &mut IR) -> PolarsResult<()> {
         bytes,
         n_parts,
         cloud_options,
-        options.decryption_properties.as_ref(),
+        options.decryption.as_ref(),
     )
     .await;
 
