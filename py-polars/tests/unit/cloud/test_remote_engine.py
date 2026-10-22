@@ -17,6 +17,12 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 import polars as pl
+from polars.io.parquet.encryption import (
+    CryptoFactory,
+    EncryptionConfiguration,
+    KmsConnectionConfig,
+    ParquetEncryptionConfig,
+)
 from polars.testing import assert_frame_equal
 
 if TYPE_CHECKING:
@@ -307,6 +313,16 @@ def test_sink_forwards_options(calls: list[tuple[Any, ...]], lf: pl.LazyFrame) -
             {
                 "encryption": pl.ParquetEncryptionProperties(
                     footer_key=b"0123456789012345"
+                )
+            },
+        ),
+        (
+            "sink_parquet",
+            {
+                "encryption": ParquetEncryptionConfig(
+                    CryptoFactory(lambda _: None),
+                    KmsConnectionConfig(),
+                    EncryptionConfiguration("footer_key", uniform_encryption=True),
                 )
             },
         ),
