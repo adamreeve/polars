@@ -15,6 +15,7 @@ use polars_io::RowIndex;
 use polars_io::predicates::{DynamicPredicateSource, PhysicalIoExpr, ScanIOPredicate};
 use polars_io::prelude::_internal::canonicalize_parquet_maps;
 use polars_io::prelude::try_set_sorted_flag;
+use polars_parquet::parquet::metadata::ColumnChunkMetadata;
 use polars_parquet::read::{Filter, PredicateFilter, PrimitiveLogicalType};
 use polars_utils::pl_str::PlSmallStr;
 use polars_utils::{IdxSize, UnitVec};
@@ -334,13 +335,14 @@ impl RowGroupDecoder {
                                         [get_projected_field_at_output_index(i)];
 
                                     let (col, pred_true_mask) = decode_column(
-                                        projection.arrow_field(),
+                                        projection.decode_field(),
+                                        projection.leaf_idxs(),
                                         &row_group_data,
                                         filter.clone(),
                                         expected_num_rows,
                                     )?;
 
-                                    let col = projection.apply_transform(col)?;
+                                    let col = projection.apply_decode_transform(col)?;
 
                                     Ok((col, pred_true_mask))
                                 })
@@ -374,6 +376,7 @@ fn row_index_column(
 
 fn decode_column(
     arrow_field: &ArrowField,
+    leaf_idxs: Option<&[usize]>,
     row_group_data: &RowGroupData,
     filter: Option<polars_parquet::read::Filter>,
     expected_num_rows: usize,
@@ -392,7 +395,7 @@ fn decode_column(
         ));
     };
 
-    let columns_to_deserialize = iter
+    let columns_to_deserialize = select_leaves(iter, leaf_idxs)
         .map(|col_md| {
             let byte_range = col_md.byte_range()?;
 
@@ -433,6 +436,28 @@ fn decode_column(
     // TODO: Also load in the metadata.
 
     Ok((series.into_column(), pred_true_mask))
+}
+
+/// Restricts the leaf column chunks under a root column to `leaf_idxs` (relative, ascending), as
+/// requested by a nested projection. `None` keeps all of them.
+fn select_leaves<'a>(
+    iter: impl Iterator<Item = &'a ColumnChunkMetadata> + 'a,
+    leaf_idxs: Option<&'a [usize]>,
+) -> Box<dyn Iterator<Item = &'a ColumnChunkMetadata> + 'a> {
+    match leaf_idxs {
+        None => Box::new(iter),
+        Some(idxs) => {
+            let mut idxs = idxs.iter().peekable();
+            Box::new(iter.enumerate().filter_map(move |(i, col_md)| {
+                if idxs.peek().is_some_and(|&&want| want == i) {
+                    idxs.next();
+                    Some(col_md)
+                } else {
+                    None
+                }
+            }))
+        },
+    }
 }
 
 /// Filters columns, in parallel depending number of rows / columns.
@@ -597,7 +622,8 @@ impl Pass {
             },
         };
         let projection = &self.projected_arrow_fields[field_idx];
-        let arrow_field = projection.arrow_field();
+        let arrow_field = projection.decode_field();
+        let leaf_idxs = projection.leaf_idxs();
 
         if let Some((i, c)) = predicate_column
             && self.mask.is_none()
@@ -606,6 +632,7 @@ impl Pass {
         {
             let (column, mask) = decode_column(
                 arrow_field,
+                leaf_idxs,
                 &self.row_group_data,
                 Some(Filter::Predicate(filter.clone())),
                 self.num_rows,
@@ -614,7 +641,7 @@ impl Pass {
                 Some(v) => Column::new_scalar(column.name().clone(), v.clone(), mask.set_bits()),
                 None => column,
             };
-            let mut column = projection.apply_transform(column)?;
+            let mut column = projection.apply_decode_transform(column)?;
             let mut mask = mask;
             if let Some(m) = dynamic_mask(c, &column)?
                 && m.unset_bits() > 0
@@ -631,12 +658,25 @@ impl Pass {
         }
 
         let column = match &self.mask {
-            Some(mask) => {
-                decode_column_prefiltered(arrow_field, &self.row_group_data, mask, self.num_rows)?
+            Some(mask) => decode_column_prefiltered(
+                arrow_field,
+                leaf_idxs,
+                &self.row_group_data,
+                mask,
+                self.num_rows,
+            )?,
+            None => {
+                decode_column(
+                    arrow_field,
+                    leaf_idxs,
+                    &self.row_group_data,
+                    None,
+                    self.num_rows,
+                )?
+                .0
             },
-            None => decode_column(arrow_field, &self.row_group_data, None, self.num_rows)?.0,
         };
-        let column = projection.apply_transform(column)?;
+        let column = projection.apply_decode_transform(column)?;
         let predicate = evaluate(&column)?;
         Ok(Decoded {
             source,
@@ -963,6 +1003,7 @@ fn compose_masks(outer: &Bitmap, inner: &Bitmap) -> Bitmap {
 
 fn decode_column_prefiltered(
     arrow_field: &ArrowField,
+    leaf_idxs: Option<&[usize]>,
     row_group_data: &RowGroupData,
     mask_bitmap: &Bitmap,
     expected_num_rows: usize,
@@ -978,7 +1019,7 @@ fn decode_column_prefiltered(
         ));
     };
 
-    let columns_to_deserialize = iter
+    let columns_to_deserialize = select_leaves(iter, leaf_idxs)
         .map(|col_md| {
             let byte_range = col_md.byte_range()?;
 

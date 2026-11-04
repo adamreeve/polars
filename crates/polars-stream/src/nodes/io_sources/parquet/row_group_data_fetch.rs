@@ -14,7 +14,6 @@ use polars_io::prelude::{FileMetadata, create_sorting_map};
 use polars_io::utils::byte_source::{ByteSource, DynByteSource};
 use polars_parquet::parquet::error::ParquetResult;
 use polars_parquet::read::RowGroupMetadata;
-use polars_utils::pl_str::PlSmallStr;
 
 use crate::nodes::io_sources::parquet::projection::ArrowFieldProjection;
 use crate::nodes::io_sources::parquet::statistics::RuntimeRangeSkipper;
@@ -157,13 +156,12 @@ impl RowGroupDataFetcher {
             // Ignore any errors getting the byte range. If there are columns without
             // metadata available (due to missing a decryption key) then an error will
             // be raised later when reading them.
-            _ if !self.is_full_projection => get_row_group_byte_ranges_for_projection(
-                row_group_metadata,
-                &mut self.projection.iter().map(|x| &x.arrow_field().name),
-            )
-            .filter_map(|r| r.ok())
-            .map(|r| r.len() as u64)
-            .sum(),
+            _ if !self.is_full_projection => {
+                { get_row_group_byte_ranges_for_projection(row_group_metadata, &self.projection) }
+                    .filter_map(|r| r.ok())
+                    .map(|r| r.len() as u64)
+                    .sum()
+            },
             _ => row_group_metadata
                 .byte_ranges_iter()
                 .map(|x| x.end - x.start)
@@ -205,7 +203,7 @@ impl RowGroupDataFetcher {
                             // Errors are raised when decoding rather than when prefetching.
                             for range in get_row_group_byte_ranges_for_projection(
                                 row_group_metadata,
-                                &mut projection.iter().map(|x| &x.arrow_field().name),
+                                &projection,
                             )
                             .filter_map(|r| r.ok())
                             {
@@ -370,11 +368,8 @@ fn get_row_group_fetch_ranges(
     is_full_projection: bool,
 ) -> ParquetResult<Vec<Range<usize>>> {
     let mut ranges = if !is_full_projection {
-        get_row_group_byte_ranges_for_projection(
-            row_group_metadata,
-            &mut projection.iter().map(|x| &x.arrow_field().name),
-        )
-        .collect::<ParquetResult<Vec<_>>>()?
+        get_row_group_byte_ranges_for_projection(row_group_metadata, projection)
+            .collect::<ParquetResult<Vec<_>>>()?
     } else {
         row_group_metadata
             .byte_ranges_iter()
@@ -402,16 +397,20 @@ async fn fetch_ranges(
 
 fn get_row_group_byte_ranges_for_projection<'a>(
     row_group_metadata: &'a RowGroupMetadata,
-    columns: &'a mut dyn Iterator<Item = &PlSmallStr>,
+    projection: &'a [ArrowFieldProjection],
 ) -> impl Iterator<Item = ParquetResult<std::ops::Range<usize>>> + 'a {
-    columns.flat_map(|col_name| {
+    projection.iter().flat_map(|p| {
+        let leaf_idxs = p.leaf_idxs();
         row_group_metadata
-            .columns_under_root_iter(col_name)
+            .columns_under_root_iter(&p.arrow_field().name)
             // `Option::into_iter` so that we return an empty iterator for the
             // `allow_missing_columns` case
             .into_iter()
             .flatten()
-            .map(|col| {
+            .enumerate()
+            // A nested projection only needs a subset of the leaves under this root.
+            .filter(move |(i, _)| leaf_idxs.is_none_or(|idxs| idxs.binary_search(i).is_ok()))
+            .map(|(_, col)| {
                 let byte_range = col.byte_range()?;
                 Ok(byte_range.start as usize..byte_range.end as usize)
             })
